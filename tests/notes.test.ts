@@ -9,7 +9,7 @@ import { PreferencesStore } from '../electron/preferences';
 import { FolderStorage } from '../electron/folder-storage';
 import { temporaryDirectory } from './helpers';
 
-const values = (): NoteValues => ({ title: '便签', content: '', color: 'yellow', createdAt: new Date().toISOString(), deleted: false });
+const values = (): NoteValues => ({ title: '便签', content: '', color: 'yellow', format: 'text', assets: {}, createdAt: new Date().toISOString(), deleted: false });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
 test('1.1 workspaces without notes migrate without changing their tasks', async t => {

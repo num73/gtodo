@@ -4,11 +4,9 @@
   .composer-wrap { padding-left: 44px; padding-right: 44px; }
 }
 @media (min-width: 1121px) {
-  .details { flex-basis: clamp(310px, 25vw, 360px); }
   .with-details .main-scroll, .with-details .composer-wrap { padding-left: 24px; padding-right: 24px; }
 }
 @media (max-width: 1120px) {
-  .sidebar { flex-basis: 210px; }
   .main-scroll { padding: 24px; }
   .composer-wrap { padding-left: 24px; padding-right: 24px; }
 }

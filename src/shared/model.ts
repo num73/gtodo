@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { OutlookCalendarOption, OutlookStatus } from './outlook';
+import type { PaneLayout } from './layout';
+import { assetMapSchema, documentFormatSchema, type CreateNoteInput, type DocumentTarget } from './documents';
 
 const id = z.string().min(1).max(160).regex(/^[a-zA-Z0-9@._:-]+$/);
 const title = z.string().trim().min(1, '请输入名称').max(500);
@@ -8,12 +10,17 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
   return !Number.isNaN(parsed.valueOf()) && localDate(parsed) === value;
 }, '日期无效');
 const nullableDate = date.nullable();
+const clockSchema = z.object({ tick: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1000000), device: id });
+export type Clock = z.infer<typeof clockSchema>;
+const noteLinkSchema = z.object({ noteId: id, taskLife: clockSchema, noteLife: clockSchema, detached: z.object({ side: z.enum(['task', 'note']), clock: clockSchema }).optional() }).nullable();
 export const colors = ['purple', 'blue', 'green', 'rose', 'orange', 'slate'] as const;
 export const listValuesSchema = z.object({
   name: title, color: z.enum(colors), deleted: z.boolean(), createdAt: z.string().datetime(),
 });
 export const taskValuesSchema = z.object({
   title, listId: id, notes: z.string().max(100000), important: z.boolean(), completed: z.boolean(),
+  notesFormat: documentFormatSchema.default('text'), notesAssets: assetMapSchema.default({}),
+  noteLink: noteLinkSchema.default(null),
   myDay: nullableDate, dueDate: nullableDate, reminder: z.string().datetime().nullable(),
   repeat: z.enum(['none', 'daily', 'weekly', 'monthly']),
   seriesId: id, createdAt: z.string().datetime(), completedAt: z.string().datetime().nullable(), deleted: z.boolean(),
@@ -22,13 +29,12 @@ export const stepValuesSchema = z.object({ taskId: id, title, completed: z.boole
 export const noteColors = ['yellow', 'purple', 'blue', 'green', 'rose'] as const;
 export const noteValuesSchema = z.object({
   title: z.string().max(200), content: z.string().max(100000), color: z.enum(noteColors),
+  format: documentFormatSchema.default('text'), assets: assetMapSchema.default({}),
   createdAt: z.string().datetime(), deleted: z.boolean(),
 });
 export type NoteValues = z.infer<typeof noteValuesSchema>;
-export type NotePatch = Partial<Pick<NoteValues, 'title' | 'content' | 'color'>>;
+export type NotePatch = Partial<Pick<NoteValues, 'title' | 'content' | 'color' | 'format'>>;
 export type Note = RecordItem<NoteValues>;
-const clockSchema = z.object({ tick: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1000000), device: id });
-export type Clock = z.infer<typeof clockSchema>;
 export type ListValues = z.infer<typeof listValuesSchema>;
 export type TaskValues = z.infer<typeof taskValuesSchema>;
 export type StepValues = z.infer<typeof stepValuesSchema>;
@@ -38,7 +44,8 @@ export type TaskList = RecordItem<ListValues>;
 export type Step = RecordItem<StepValues>;
 
 function recordSchema<T extends z.ZodRawShape>(values: z.ZodObject<T>) {
-  const shape = Object.fromEntries(Object.keys(values.shape).map(key => [key, clockSchema]));
+  const shape = Object.fromEntries(Object.keys(values.shape).map(key => [key,
+    ['notesFormat', 'notesAssets', 'format', 'assets', 'noteLink'].includes(key) ? clockSchema.default({ tick: 0, device: 'legacy' }) : clockSchema]));
   return z.object({ id, values, clocks: z.object(shape) });
 }
 export const workspaceSchema = z.object({
@@ -72,18 +79,19 @@ export function nextDate(value: string, repeat: TaskValues['repeat']): string {
 }
 export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('task.add'), title, listId: id, myDay: nullableDate.optional(), important: z.boolean().optional(), dueDate: nullableDate.optional() }),
-  z.object({ type: z.literal('task.update'), id, patch: taskValuesSchema.omit({ seriesId: true, createdAt: true, completedAt: true }).partial() }),
+  z.object({ type: z.literal('task.update'), id, patch: taskValuesSchema.omit({ seriesId: true, createdAt: true, completedAt: true, notesFormat: true, notesAssets: true, noteLink: true }).partial().extend({ notesFormat: documentFormatSchema.optional(), notesAssets: assetMapSchema.optional() }) }),
+  z.object({ type: z.literal('task.link-note'), id }),
   z.object({ type: z.literal('list.add'), name: title, color: z.enum(colors) }),
   z.object({ type: z.literal('list.update'), id, patch: listValuesSchema.omit({ createdAt: true }).partial() }),
   z.object({ type: z.literal('step.add'), taskId: id, title }),
   z.object({ type: z.literal('step.update'), id, patch: stepValuesSchema.pick({ title: true, completed: true, deleted: true }).partial() }),
-  z.object({ type: z.literal('note.add'), title: z.string().max(200).optional(), content: z.string().max(100000).optional(), color: z.enum(noteColors).optional() }),
-  z.object({ type: z.literal('note.update'), id, patch: noteValuesSchema.omit({ createdAt: true }).partial() }),
+  z.object({ type: z.literal('note.add'), title: z.string().max(200).optional(), content: z.string().max(100000).optional(), color: z.enum(noteColors).optional(), format: documentFormatSchema.optional(), assets: assetMapSchema.optional() }),
+  z.object({ type: z.literal('note.update'), id, patch: noteValuesSchema.omit({ createdAt: true, format: true, assets: true }).partial().extend({ format: documentFormatSchema.optional(), assets: assetMapSchema.optional() }) }),
 ]);
 export type Command = z.infer<typeof commandSchema>;
-export interface FolderStatus { error: string | null; lastRead: string | null }
+export interface FolderStatus { error: string | null; lastRead: string | null; notice?: string | null }
 export interface NoteWindowSettings { open: boolean; pinned: boolean; bounds?: { x: number; y: number; width: number; height: number } }
-export interface AppState { workspace: Workspace; deviceId: string; dataPath: string; notice: string | null; folder: FolderStatus; zoom: number; version: string; noteWindows: Record<string, NoteWindowSettings>; outlook: OutlookStatus }
+export interface AppState { workspace: Workspace; deviceId: string; dataPath: string; notice: string | null; folder: FolderStatus; zoom: number; version: string; paneLayout: PaneLayout; pomodoroWindow: NoteWindowSettings; noteWindows: Record<string, NoteWindowSettings>; outlook: OutlookStatus }
 export const noteWindowActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('open'), id }), z.object({ type: z.literal('hide'), id }),
   z.object({ type: z.literal('pin'), id, pinned: z.boolean() }),
@@ -101,7 +109,9 @@ export interface DesktopAPI {
   getPomodoro(): Promise<import('./pomodoro').PomodoroSnapshot>;
   pomodoroCommand(command: import('./pomodoro').PomodoroCommand): Promise<import('./pomodoro').PomodoroSnapshot>;
   onPomodoro(callback: (state: import('./pomodoro').PomodoroSnapshot) => void): () => void;
-  onOpenPomodoro(callback: () => void): () => void;
+  openPomodoro(taskId?: string): Promise<void>;
+  pomodoroWindow(action: { type: 'hide' } | { type: 'pin'; pinned: boolean }): Promise<void>;
+  setPaneLayout(layout: PaneLayout): Promise<AppState>;
   getState(): Promise<AppState>;
   command(command: Command): Promise<AppState>;
   chooseDataFolder(): Promise<AppState>;
@@ -113,7 +123,12 @@ export interface DesktopAPI {
   listOutlookCalendars(): Promise<OutlookCalendarOption[]>;
   configureOutlook(input: { enabled: boolean; calendarId?: string }): Promise<AppState>;
   syncOutlook(): Promise<AppState>;
-  createNote(input?: { title?: string; content?: string }): Promise<string>;
+  createNote(input?: CreateNoteInput): Promise<string>;
+  createLinkedNote(taskId: string): Promise<string>;
+  pickDocumentImage(target: DocumentTarget): Promise<{ path: string; name: string } | null>;
+  insertDocumentImage(input: { target: DocumentTarget; bytes: Uint8Array; name: string }): Promise<{ path: string; name: string }>;
+  showDocumentFile(target: DocumentTarget): Promise<void>;
+  openLink(url: string): Promise<void>;
   noteWindow(action: NoteWindowAction): Promise<void>;
   deleteNote(id: string): Promise<AppState>;
   showMain(): Promise<void>;

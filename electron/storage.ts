@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { WorkspaceEngine } from '../src/shared/engine';
 import { parseWorkspace, type Workspace } from '../src/shared/model';
 
-export async function atomicWrite(file: string, content: string) {
+export async function atomicWrite(file: string, content: string | Uint8Array) {
   await mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${crypto.randomUUID()}.tmp`;
   try {

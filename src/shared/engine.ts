@@ -1,8 +1,7 @@
 import { emptyWorkspace, localDate, nextDate, type Clock, type Command, type RecordItem, type Workspace, type TaskValues } from './model';
+import { compareClock, linkedNoteForTask, linkedTaskForNote, synchronizeLinkedNotes } from './note-links';
 
-export function compareClock(a: Clock, b: Clock): number {
-  return a.tick - b.tick || (a.device < b.device ? -1 : a.device > b.device ? 1 : 0);
-}
+export { compareClock } from './note-links';
 function mergeRecords<T extends object>(a: RecordItem<T>[], b: RecordItem<T>[]): RecordItem<T>[] {
   const result = new Map(a.map(item => [item.id, structuredClone(item)]));
   for (const remote of b) {
@@ -18,12 +17,12 @@ function mergeRecords<T extends object>(a: RecordItem<T>[], b: RecordItem<T>[]):
   return [...result.values()].sort((x, y) => x.id.localeCompare(y.id, 'en'));
 }
 export function mergeWorkspaces(a: Workspace, b: Workspace): Workspace {
-  return { schemaVersion: 1, lists: mergeRecords(a.lists, b.lists), tasks: mergeRecords(a.tasks, b.tasks), steps: mergeRecords(a.steps, b.steps), notes: mergeRecords(a.notes, b.notes) };
+  return synchronizeLinkedNotes({ schemaVersion: 1, lists: mergeRecords(a.lists, b.lists), tasks: mergeRecords(a.tasks, b.tasks), steps: mergeRecords(a.steps, b.steps), notes: mergeRecords(a.notes, b.notes) });
 }
 export class WorkspaceEngine {
   state: Workspace;
   private tick = 0;
-  constructor(readonly deviceId: string, state = emptyWorkspace()) { this.state = structuredClone(state); this.observe(); }
+  constructor(readonly deviceId: string, state = emptyWorkspace()) { this.state = synchronizeLinkedNotes(structuredClone(state)); this.observe(); }
   private observe() {
     for (const collection of [this.state.lists, this.state.tasks, this.state.steps, this.state.notes]) {
       for (const item of collection) for (const clock of Object.values(item.clocks) as Clock[]) this.tick = Math.max(this.tick, clock.tick);
@@ -56,7 +55,7 @@ export class WorkspaceEngine {
         const taskId = crypto.randomUUID();
         this.ensureList(command.listId);
         this.state.tasks.push(this.record<TaskValues>(taskId, {
-          title: command.title, listId: command.listId, notes: '', important: command.important ?? false,
+          title: command.title, listId: command.listId, notes: '', notesFormat: 'text', notesAssets: {}, noteLink: null, important: command.important ?? false,
           completed: false, myDay: command.myDay ?? null, dueDate: command.dueDate ?? null,
           reminder: null, repeat: 'none', seriesId: taskId, createdAt: now, completedAt: null, deleted: false,
         })); break;
@@ -66,11 +65,26 @@ export class WorkspaceEngine {
         if (!task) throw new Error('任务不存在。');
         if (command.patch.listId) this.ensureList(command.patch.listId);
         const wasCompleted = task.values.completed;
-        this.patch(task, command.patch);
+        const { deleted, ...patch } = command.patch;
+        this.patch(task, patch);
+        synchronizeLinkedNotes(this.state);
+        const linked = linkedNoteForTask(this.state, task);
+        if (deleted !== undefined) this.patch(task, { deleted });
+        if (deleted && linked) this.patch(task, { noteLink: { ...task.values.noteLink!, detached: { side: 'task', clock: { ...task.clocks.deleted } } } });
         if (command.patch.completed !== undefined && wasCompleted !== command.patch.completed) {
           this.patch(task, { completedAt: command.patch.completed ? now : null });
           if (command.patch.completed && task.values.repeat !== 'none' && !task.values.deleted) this.repeatTask(task.id);
         }
+        break;
+      }
+      case 'task.link-note': {
+        const task = this.state.tasks.find(item => item.id === command.id && !item.values.deleted);
+        if (!task) throw new Error('任务不存在。');
+        if (linkedNoteForTask(this.state, task)) break;
+        const note = this.record(crypto.randomUUID(), { title: task.values.title.slice(0, 200), content: task.values.notes, color: 'yellow' as const, format: task.values.notesFormat, assets: structuredClone(task.values.notesAssets), createdAt: now, deleted: false });
+        note.clocks.content = { ...task.clocks.notes }; note.clocks.format = { ...task.clocks.notesFormat }; note.clocks.assets = { ...task.clocks.notesAssets };
+        this.state.notes.push(note);
+        this.patch(task, { noteLink: { noteId: note.id, taskLife: { ...task.clocks.deleted }, noteLife: { ...note.clocks.deleted } } });
         break;
       }
       case 'step.add': {
@@ -79,8 +93,17 @@ export class WorkspaceEngine {
         this.state.steps.push(this.record(stepId, { taskId: command.taskId, title: command.title, completed: false, deleted: false, originId: stepId })); break;
       }
       case 'step.update': this.patch(this.state.steps.find(item => item.id === command.id), command.patch); break;
-      case 'note.add': this.state.notes.push(this.record(crypto.randomUUID(), { title: command.title ?? '', content: command.content ?? '', color: command.color ?? 'yellow', createdAt: now, deleted: false })); break;
-      case 'note.update': this.patch(this.state.notes.find(item => item.id === command.id), command.patch); break;
+      case 'note.add': this.state.notes.push(this.record(crypto.randomUUID(), { title: command.title ?? '', content: command.content ?? '', color: command.color ?? 'yellow', format: command.format ?? 'text', assets: command.assets ?? {}, createdAt: now, deleted: false })); break;
+      case 'note.update': {
+        const note = this.state.notes.find(item => item.id === command.id);
+        const { deleted, ...patch } = command.patch;
+        this.patch(note, patch);
+        synchronizeLinkedNotes(this.state);
+        const task = note && linkedTaskForNote(this.state, note);
+        if (deleted !== undefined) this.patch(note, { deleted });
+        if (deleted && task) this.patch(task, { noteLink: { ...task.values.noteLink!, detached: { side: 'note', clock: { ...note!.clocks.deleted } } } });
+        break;
+      }
     }
   }
   private ensureList(id: string) {
@@ -92,7 +115,7 @@ export class WorkspaceEngine {
     const nextId = `${current.values.seriesId}@${dueDate}`;
     if (this.state.tasks.some(item => item.id === nextId)) return;
     const now = new Date().toISOString();
-    this.state.tasks.push(this.record(nextId, { ...current.values, dueDate, myDay: null, completed: false, completedAt: null, reminder: null, createdAt: now }));
+    this.state.tasks.push(this.record(nextId, { ...current.values, noteLink: null, dueDate, myDay: null, completed: false, completedAt: null, reminder: null, createdAt: now }));
     for (const step of this.state.steps.filter(item => item.values.taskId === id && !item.values.deleted)) {
       this.state.steps.push(this.record(`${nextId}:${step.values.originId}`, { ...step.values, taskId: nextId, completed: false }));
     }

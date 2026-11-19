@@ -33,7 +33,7 @@ export default function Settings({ state, api, close, update, toast }: { state: 
       <div className="shortcut-hints"><span><kbd>Ctrl</kbd> + <kbd>+</kbd> / <kbd>−</kbd> 缩放</span><span><kbd>Ctrl</kbd> + <kbd>0</kbd> 恢复</span><span><kbd>Ctrl</kbd> + 滚轮</span></div>
       <div className="settings-divider" />
       <div className="backup-row"><div><h3 className="section-label">数据备份</h3><p>JSON 格式，导入时合并数据。</p></div><div className="button-row"><button className="button secondary" disabled={busy} onClick={() => void execute(async () => { if (await api.exportBackup()) toast('备份已导出'); })}><Download size={16} />导出</button><button className="button secondary" disabled={busy} onClick={() => void execute(async () => update(await api.importBackup()))}><Upload size={16} />导入</button></div></div>
-      <div className="settings-footer"><span>GTodo v{state.version}</span><button className="text-button app-quit-button" title="保存内容并关闭所有 GTodo 窗口" onClick={() => api.quit()}>退出 GTodo</button></div>
+      <div className="settings-footer"><div className="settings-about"><span>GTodo v{state.version}</span><span className="settings-contact">作者邮箱：xlnum73@outlook.com</span></div><button className="text-button app-quit-button" title="保存内容并关闭所有 GTodo 窗口" onClick={() => api.quit()}>退出 GTodo</button></div>
       <p className="settings-footnote">关闭主窗口后，便签、番茄钟和已开启的日历同步继续运行。退出时保存内容并暂停计时。</p>
     </div>
     {error && <div className="inline-error" role="alert"><AlertCircle size={18} /><span>{error}</span></div>}

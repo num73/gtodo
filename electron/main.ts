@@ -2,16 +2,22 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, p
 import path from 'node:path';
 import { readFile, stat } from 'node:fs/promises';
 import { z } from 'zod';
-import { commandSchema, localDate, nextZoom, noteWindowActionSchema, parseWorkspace, zoomSteps, type AppState, type ZoomAction } from '../src/shared/model';
+import { commandSchema, localDate, nextZoom, noteWindowActionSchema, parseWorkspace, zoomSteps, type AppState, type Command, type ZoomAction } from '../src/shared/model';
+import { linkedNoteForTask } from '../src/shared/note-links';
+import { applyCommandWithDrafts } from './linked-note-commands';
 import { atomicWrite, DataStore } from './storage';
-import { FolderStorage, MAX_DATA_BYTES } from './folder-storage';
+import { FolderStorage } from './folder-storage';
 import { PreferencesStore, type Preferences } from './preferences';
 import { NoteWindows } from './note-windows';
 import { Diagnostics } from './diagnostics';
+import { documentEntry, MAX_BACKUP_BYTES } from './document-files';
+import { documentFormatSchema, documentTargetSchema, MAX_IMAGE_BYTES, type CreateNoteInput, type DocumentTarget } from '../src/shared/documents';
 import { createOutlookBridge } from './outlook-bridge';
 import { OutlookSync } from './outlook-sync';
 import { emptyOutlookStatus } from '../src/shared/outlook';
 import { PomodoroTimer } from './pomodoro';
+import { PomodoroWindow } from './pomodoro-window';
+import { paneLayoutSchema } from '../src/shared/layout';
 import { formatCountdown, phaseLabels, pomodoroCommandSchema, remainingTime } from '../src/shared/pomodoro';
 
 app.setName('GTodo');
@@ -22,12 +28,14 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'gtodo', privileges: { standard:
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 let window: BrowserWindow | null = null;
+let mainRendererReady = false;
 let store: DataStore;
 let preferences: PreferencesStore;
 let folders: FolderStorage;
 let notes: NoteWindows;
 let outlook: OutlookSync | undefined;
 let pomodoro: PomodoroTimer | undefined;
+let pomodoroWindow: PomodoroWindow | undefined;
 let pomodoroTick: ReturnType<typeof setInterval> | undefined;
 let pomodoroNotification: Notification | undefined;
 let tray: Tray | undefined;
@@ -40,20 +48,21 @@ let quitting = false;
 const devURL = !app.isPackaged && process.env.GTODO_DEV_URL === 'http://127.0.0.1:5173' ? process.env.GTODO_DEV_URL : null;
 function state(): AppState {
   return { workspace: structuredClone(store.engine.state), deviceId: store.engine.deviceId, dataPath: folders.directory,
-    notice: store.notice, folder: { ...folders.status }, zoom: preferences.value.zoom, version: app.getVersion(), noteWindows: structuredClone(preferences.value.noteWindows), outlook: outlook?.snapshot() ?? emptyOutlookStatus() };
+    notice: store.notice, folder: { ...folders.status }, zoom: preferences.value.zoom, version: app.getVersion(), paneLayout: { ...preferences.value.paneLayout }, pomodoroWindow: structuredClone(preferences.value.pomodoroWindow), noteWindows: structuredClone(preferences.value.noteWindows), outlook: outlook?.snapshot() ?? emptyOutlookStatus() };
 }
 function changed() {
   const current = state();
   if (window && !window.isDestroyed()) window.webContents.send('gtodo:changed', current);
   notes?.broadcast(current);
+  pomodoroWindow?.send('gtodo:changed', current);
 }
-function trusted(event: IpcMainInvokeEvent, allowNote = false) {
+function trusted(event: IpcMainInvokeEvent, allowNote = false, allowPomodoro = false) {
   const url = event.senderFrame?.url;
-  const known = (window && event.sender === window.webContents) || (allowNote && notes?.owner(event.sender));
+  const known = (window && event.sender === window.webContents) || (allowNote && notes?.owner(event.sender)) || (allowPomodoro && pomodoroWindow?.owns(event.sender));
   if (!known || event.senderFrame !== event.sender.mainFrame || !(url?.startsWith('gtodo://app/') || (devURL && url?.startsWith(`${devURL}/`)))) throw new Error('未授权的应用请求。');
 }
-function handle(channel: string, callback: (value: unknown, event: IpcMainInvokeEvent) => unknown, allowNote = false) {
-  ipcMain.handle(channel, async (event, value) => { trusted(event, allowNote); return callback(value, event); });
+function handle(channel: string, callback: (value: unknown, event: IpcMainInvokeEvent) => unknown, allowNote = false, allowPomodoro = false) {
+  ipcMain.handle(channel, async (event, value) => { trusted(event, allowNote, allowPomodoro); return callback(value, event); });
 }
 function ownNoteOnly(event: IpcMainInvokeEvent, id: string) {
   const owner = notes.owner(event.sender);
@@ -65,16 +74,25 @@ function showMain() {
   window!.show(); window!.focus();
 }
 function showPomodoro() {
-  showMain();
-  const contents = window!.webContents;
-  const open = () => { if (!contents.isDestroyed()) contents.send('gtodo:pomodoro-open'); };
-  if (contents.isLoadingMainFrame()) contents.once('did-finish-load', open); else open();
+  trayAction(() => pomodoroWindow!.open());
 }
-async function createNote(input?: { title?: string; content?: string }) {
+async function createNote(input?: CreateNoteInput) {
   let id = '';
   const command = commandSchema.parse({ ...input, type: 'note.add' });
-  await folders.update(engine => { engine.apply(command); id = engine.state.notes.at(-1)!.id; });
+  if (command.type !== 'note.add') throw new Error('便签请求无效。');
+  await folders.update(engine => {
+    const assets = input?.source ? documentEntry(engine.state, input.source).assets : {};
+    engine.apply({ ...command, assets }); id = engine.state.notes.at(-1)!.id;
+  });
   await notes.open(id); return id;
+}
+async function applyCommand(command: Command) {
+  await applyCommandWithDrafts(command, {
+    workspace: () => store.engine.state,
+    flushMain: () => mainRendererReady ? notes.flushWindow(window) : Promise.resolve(true),
+    withSavedNote: (id, action) => notes.withSaved(id, action),
+    update: command => folders.update(engine => engine.apply(command)),
+  });
 }
 function trayAction(action: () => Promise<unknown>) {
   void action().catch(error => dialog.showErrorBox('GTodo', error instanceof Error ? error.message : String(error)));
@@ -128,6 +146,7 @@ function rememberWindow() {
   }, 400);
 }
 function createWindow() {
+  mainRendererReady = false;
   const saved = preferences.value.window;
   const area = saved ? screen.getDisplayMatching(saved).workArea : screen.getPrimaryDisplay().workArea;
   const width = Math.min(saved?.width ?? 1320, area.width);
@@ -169,7 +188,7 @@ function createWindow() {
     rememberWindow();
     if (quitting) return;
     event.preventDefault();
-    if (notes?.hasVisible() || preferences.value.outlook.enabled || pomodoro?.isActive()) window?.hide(); else app.quit();
+    if (notes?.hasVisible() || pomodoroWindow?.hasVisible() || preferences.value.outlook.enabled || pomodoro?.isActive()) window?.hide(); else app.quit();
   });
   window.on('closed', () => { window = null; });
   if (saved?.maximized) window.maximize();
@@ -182,6 +201,15 @@ async function initialize() {
   const root = path.join(app.getAppPath(), 'dist');
   protocol.handle('gtodo', async request => {
     const url = new URL(request.url);
+    if (url.hostname === 'app' && url.pathname.startsWith('/media/')) {
+      try {
+        const parts = url.pathname.split('/').slice(2).map(decodeURIComponent);
+        if (parts.length !== 3) return new Response('Not found', { status: 404 });
+        const target = documentTargetSchema.parse({ kind: parts[0], id: parts[1] });
+        const data = await folders.documents.readImage(folders.directory, store.engine.state, target, `assets/${parts[2]}`);
+        return new Response(data.bytes, { headers: { 'Content-Type': `image/${data.type === 'jpg' ? 'jpeg' : data.type}`, 'Cache-Control': 'no-store' } });
+      } catch { return new Response('Image unavailable', { status: 404, headers: { 'Cache-Control': 'no-store' } }); }
+    }
     const file = path.resolve(root, `.${decodeURIComponent(url.pathname)}`);
     const relative = path.relative(root, file);
     if (url.hostname !== 'app' || relative.startsWith('..') || path.isAbsolute(relative)) return new Response('Forbidden', { status: 403 });
@@ -201,11 +229,14 @@ async function initialize() {
   notes = new NoteWindows({ preferences, workspace: () => store.engine.state, publish: changed, quitting: () => quitting,
     native: { BrowserWindow, screen, dialog }, report: diagnostics.report,
     preload: path.join(__dirname, 'preload.cjs'), icon: path.join(app.getAppPath(), 'assets/icon.png'), url: devURL ? `${devURL}/` : 'gtodo://app/index.html' });
+  pomodoroWindow = new PomodoroWindow({ preferences, publish: changed, quitting: () => quitting, native: { BrowserWindow, screen, dialog }, report: diagnostics.report,
+    preload: path.join(__dirname, 'preload.cjs'), icon: path.join(app.getAppPath(), 'assets/icon.png'), url: devURL ? `${devURL}/` : 'gtodo://app/index.html' });
   pomodoro = new PomodoroTimer({ directory: app.getPath('userData'), task: id => {
     const task = store.engine.state.tasks.find(task => task.id === id && !task.values.deleted && !task.values.completed);
     return task ? { id: task.id, title: task.values.title } : null;
   }, changed: timer => {
     if (window && !window.isDestroyed()) window.webContents.send('gtodo:pomodoro-changed', timer);
+    pomodoroWindow?.send('gtodo:pomodoro-changed', timer);
     updateTray();
   }, completed: completion => {
     const title = `GTodo · ${phaseLabels[completion.phase]}结束`;
@@ -218,18 +249,80 @@ async function initialize() {
     if (window && !window.isDestroyed() && !window.isFocused()) window.flashFrame(true);
   } });
   await pomodoro.initialize();
-  handle('gtodo:pomodoro-state', () => pomodoro!.snapshot());
-  handle('gtodo:pomodoro-command', value => pomodoro!.command(pomodoroCommandSchema.parse(value)));
-  handle('gtodo:state', () => state(), true);
+  handle('gtodo:pomodoro-state', () => pomodoro!.snapshot(), false, true);
+  handle('gtodo:pomodoro-command', value => pomodoro!.command(pomodoroCommandSchema.parse(value)), false, true);
+  handle('gtodo:pomodoro-open', async value => {
+    const taskId = z.string().min(1).max(160).optional().parse(value);
+    await pomodoroWindow!.open();
+    const session = pomodoro!.snapshot().session;
+    if (taskId && !(session.status !== 'idle' && session.phase === 'focus' && session.task?.id === taskId)) await pomodoro!.command({ type: 'select', phase: 'focus', taskId });
+  });
+  handle('gtodo:pomodoro-window', async value => {
+    const action = z.discriminatedUnion('type', [z.object({ type: z.literal('hide') }), z.object({ type: z.literal('pin'), pinned: z.boolean() })]).parse(value);
+    if (action.type === 'hide') await pomodoroWindow!.hide(); else await pomodoroWindow!.pin(action.pinned);
+  }, false, true);
+  handle('gtodo:pane-layout', async value => {
+    const layout = paneLayoutSchema.parse(value);
+    await preferences.update(value => { value.paneLayout = layout; }); changed(); return state();
+  });
+  handle('gtodo:state', (_value, event) => { if (event.sender === window?.webContents) mainRendererReady = true; return state(); }, true, true);
   handle('gtodo:command', async (value, event) => {
     const command = commandSchema.parse(value);
     if (notes.owner(event.sender)) {
       if (command.type !== 'note.update') throw new Error('便签窗口无法执行此操作。');
       ownNoteOnly(event, command.id);
     }
-    await folders.update(engine => engine.apply(command)); return state();
+    await applyCommand(command); return state();
   }, true);
-  handle('gtodo:note-create', value => createNote(z.object({ title: z.string().max(200).optional(), content: z.string().max(100000).optional() }).optional().parse(value)), true);
+  handle('gtodo:note-link', async value => {
+    const command = commandSchema.parse({ type: 'task.link-note', id: value });
+    if (command.type !== 'task.link-note') throw new Error('关联请求无效。');
+    if (mainRendererReady && !await notes.flushWindow(window)) throw new Error('任务备注尚未保存，请重试。');
+    let id = '';
+    await folders.update(engine => {
+      engine.apply(command);
+      id = linkedNoteForTask(engine.state, engine.state.tasks.find(task => task.id === command.id)!)!.id;
+    });
+    await notes.open(id); return id;
+  });
+  handle('gtodo:note-create', (value, event) => {
+    const input = z.object({ title: z.string().max(200).optional(), content: z.string().max(100000).optional(), format: documentFormatSchema.optional(), source: documentTargetSchema.optional() }).optional().parse(value);
+    if (input?.source) checkDocumentOwner(event, input.source);
+    return createNote(input);
+  }, true);
+  function checkDocumentOwner(event: IpcMainInvokeEvent, target: DocumentTarget) {
+    if (notes.owner(event.sender)) {
+      if (target.kind !== 'note') throw new Error('便签窗口只能访问自己的文档。');
+      ownNoteOnly(event, target.id);
+    }
+    documentEntry(store.engine.state, target);
+  }
+  handle('gtodo:document-image-pick', async (value, event) => {
+    const target = documentTargetSchema.parse(value); checkDocumentOwner(event, target);
+    const owner = BrowserWindow.fromWebContents(event.sender)!;
+    const result = await dialog.showOpenDialog(owner, { title: '插入图片', properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const file = result.filePaths[0];
+    if ((await stat(file)).size > MAX_IMAGE_BYTES) throw new Error('单张图片不能超过 10 MB。');
+    const relative = await folders.addImage(target, await readFile(file));
+    return { path: relative, name: path.basename(file) };
+  }, true);
+  handle('gtodo:document-image', async (value, event) => {
+    const input = z.object({ target: documentTargetSchema, name: z.string().max(200), bytes: z.custom<Uint8Array>(value => value instanceof Uint8Array && value.byteLength <= MAX_IMAGE_BYTES) }).parse(value);
+    checkDocumentOwner(event, input.target);
+    return { path: await folders.addImage(input.target, input.bytes), name: input.name };
+  }, true);
+  handle('gtodo:document-show', async (value, event) => {
+    const target = documentTargetSchema.parse(value); checkDocumentOwner(event, target);
+    await folders.refresh();
+    if (folders.status.error) throw new Error(folders.status.error);
+    shell.showItemInFolder(await folders.documents.filePath(folders.directory, store.engine.state, target));
+  }, true);
+  handle('gtodo:open-link', value => {
+    const url = z.string().max(4000).parse(value); const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('只支持网页链接。');
+    return shell.openExternal(parsed.href);
+  }, true);
   handle('gtodo:note-window', async (value, event) => {
     const action = noteWindowActionSchema.parse(value); ownNoteOnly(event, action.id);
     if (action.type === 'open') await notes.open(action.id);
@@ -238,16 +331,14 @@ async function initialize() {
   }, true);
   handle('gtodo:note-delete', async (value, event) => {
     const id = z.string().uuid().parse(value); ownNoteOnly(event, id);
-    return notes.withSaved(id, async () => {
-      await folders.update(engine => engine.apply({ type: 'note.update', id, patch: { deleted: true } }));
-      await notes.hide(id, false); return state();
-    });
+    await applyCommand({ type: 'note.update', id, patch: { deleted: true } });
+    await notes.hide(id, false); return state();
   }, true);
   handle('gtodo:note-flushed', (value, event) => {
     const result = z.object({ requestId: z.string().uuid(), success: z.boolean() }).parse(value);
     notes.acknowledge(event.sender, result.requestId, result.success);
   }, true);
-  handle('gtodo:show-main', showMain, true);
+  handle('gtodo:show-main', showMain, true, true);
   handle('gtodo:choose-folder', async () => {
     const result = await dialog.showOpenDialog(window!, { title: '选择 GTodo 数据文件夹', defaultPath: folders.directory, properties: ['openDirectory', 'createDirectory'], buttonLabel: '使用此文件夹' });
     if (!result.canceled && result.filePaths[0]) await folders.changeDirectory(result.filePaths[0]);
@@ -268,15 +359,18 @@ async function initialize() {
   handle('gtodo:export', async () => {
     const result = await dialog.showSaveDialog(window!, { title: '导出 GTodo 备份', defaultPath: `GTodo-备份-${localDate()}.json`, filters: [{ name: 'GTodo 备份', extensions: ['json'] }] });
     if (result.canceled || !result.filePath) return false;
-    await atomicWrite(result.filePath, JSON.stringify(store.engine.state, null, 2)); return true;
+    await folders.refresh();
+    await atomicWrite(result.filePath, await folders.documents.backup(store.engine.state)); return true;
   });
   handle('gtodo:import', async () => {
     const result = await dialog.showOpenDialog(window!, { title: '导入并合并 GTodo 备份', properties: ['openFile'], filters: [{ name: 'GTodo 备份', extensions: ['json'] }] });
     if (result.canceled || !result.filePaths[0]) return state();
-    if ((await stat(result.filePaths[0])).size > MAX_DATA_BYTES) throw new Error('备份文件超过 24 MB。');
+    if ((await stat(result.filePaths[0])).size > MAX_BACKUP_BYTES) throw new Error('备份文件超过 160 MB。');
     let imported;
-    try { imported = parseWorkspace(JSON.parse(await readFile(result.filePaths[0], 'utf8'))); }
+    let attachments;
+    try { const data = JSON.parse(await readFile(result.filePaths[0], 'utf8')); imported = parseWorkspace(data); attachments = data.attachments; }
     catch { throw new Error('这不是有效的 GTodo 备份，现有数据未改变。'); }
+    await folders.documents.importAttachments(attachments);
     await folders.update(engine => engine.merge(imported)); return state();
   });
   ipcMain.on('gtodo:window', (event, action) => {
@@ -290,6 +384,10 @@ async function initialize() {
   if (await notes.restore()) {
     store.notice = [store.notice, '部分便签未能打开，内容已保留，可在“桌面便签”中重新打开。'].filter(Boolean).join('\n');
     changed();
+  }
+  if (preferences.value.pomodoroWindow.open) {
+    try { await pomodoroWindow.open(false); }
+    catch { store.notice = '番茄钟窗口未能恢复，可从左侧栏重新打开。'; changed(); }
   }
   outlook.start();
   void pomodoro.tick().catch(() => {});
@@ -325,12 +423,15 @@ app.on('before-quit', event => {
     if (preparingToQuit) return;
     preparingToQuit = true;
     void (async () => {
-      if (notes && !await notes.flushAll()) throw new Error('有便签尚未完成保存，已取消退出。请检查便签中的保存提示后重试。');
+      if (window && !window.isDestroyed()) window.setEnabled(false);
+      pomodoroWindow?.setEnabled(false);
+      if (notes && !(await Promise.all([notes.flushAll(), mainRendererReady ? notes.flushWindow(window) : Promise.resolve(true)])).every(Boolean)) throw new Error('有备注或便签尚未完成保存，已取消退出。请检查保存提示后重试。');
       if (boundsTimer) clearTimeout(boundsTimer);
       await Promise.all([
         zoomQueue, folders.flush(),
         lastBounds ? preferences.update(value => { value.window = lastBounds; }) : Promise.resolve(),
         notes?.saveAllBounds(),
+        pomodoroWindow?.flush(),
       ]);
       await preferences.flush();
       await pomodoro?.pause();
@@ -339,7 +440,7 @@ app.on('before-quit', event => {
       if (pomodoroTick) clearInterval(pomodoroTick);
       outlook?.stop();
       quitting = true; flushedOnQuit = true; tray?.destroy(); tray = undefined; app.quit();
-    })().catch(error => { notes?.resumeInteractions(); dialog.showErrorBox('GTodo 尚未退出', error instanceof Error ? error.message : String(error)); })
+    })().catch(error => { notes?.resumeInteractions(); pomodoroWindow?.setEnabled(true); if (window && !window.isDestroyed()) window.setEnabled(true); dialog.showErrorBox('GTodo 尚未退出', error instanceof Error ? error.message : String(error)); })
       .finally(() => { preparingToQuit = false; });
   }
 });

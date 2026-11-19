@@ -1,19 +1,18 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Timer, Pause, Play, RotateCcw } from 'lucide-react';
-import Modal from '../components/Modal';
 import type { Task } from '../shared/model';
 import { formatCountdown, phaseLabels, pomodoroPhases, type PomodoroSettings, type PomodoroSnapshot } from '../shared/pomodoro';
 import { useCountdown, type PomodoroController } from './usePomodoro';
 
-export function PomodoroIndicator({ state, open }: { state: PomodoroSnapshot | null; open: () => void }) {
+export function PomodoroLauncher({ state, open }: { state: PomodoroSnapshot | null; open: () => void }) {
   const remaining = useCountdown(state?.session);
   const active = state?.session.status !== 'idle' && !!state;
-  return <button className={`titlebar-pomodoro ${active ? 'is-active' : ''}`} aria-label="打开番茄钟" title={active ? `${phaseLabels[state.session.phase]} · ${formatCountdown(remaining)}${state.session.status === 'paused' ? ' · 已暂停' : ''}` : '番茄钟'} onClick={open}>
-    {state?.session.status === 'paused' ? <Pause size={15} /> : <Timer size={15} />}{active && <span>{formatCountdown(remaining)}</span>}
+  return <button className={`desktop-notes-button pomodoro-launcher ${active ? 'is-active' : ''}`} aria-label="打开番茄钟" title={active ? `${phaseLabels[state.session.phase]} · ${formatCountdown(remaining)}${state.session.status === 'paused' ? ' · 已暂停' : ''}` : '番茄钟'} onClick={open}>
+    {state?.session.status === 'paused' ? <Pause size={18} /> : <Timer size={18} />}<span>番茄钟</span>{active && <small>{formatCountdown(remaining)}</small>}
   </button>;
 }
 
-export default function Pomodoro({ controller, tasks, close }: { controller: PomodoroController; tasks: Task[]; close: () => void }) {
+export default function Pomodoro({ controller, tasks }: { controller: PomodoroController; tasks: Task[] }) {
   const { snapshot, busy, error, run } = controller;
   const remaining = useCountdown(snapshot?.session);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -26,7 +25,7 @@ export default function Pomodoro({ controller, tasks, close }: { controller: Pom
   async function saveSettings(event: FormEvent) {
     event.preventDefault(); if (draft && await run({ type: 'configure', settings: draft })) setSettingsOpen(false);
   }
-  return <Modal title="番茄钟" close={close} busy={busy}>
+  return <section className="pomodoro-content" aria-label="番茄钟计时">
     {snapshot && session && <div className="pomodoro-body">
       <div className="pomodoro-modes" role="group" aria-label="计时模式">{pomodoroPhases.map(phase => <button key={phase} aria-pressed={session.phase === phase} disabled={disabled || active} onClick={() => void run({ type: 'select', phase })}>{phaseLabels[phase]}</button>)}</div>
       <div className="pomodoro-clock">
@@ -58,5 +57,5 @@ export default function Pomodoro({ controller, tasks, close }: { controller: Pom
     </div>}
     {!snapshot && !error && <p className="pomodoro-body">加载中…</p>}
     {(error || snapshot?.error) && <p className="inline-error" role="alert">{error || snapshot?.error}</p>}
-  </Modal>;
+  </section>;
 }

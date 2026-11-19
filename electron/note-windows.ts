@@ -63,7 +63,7 @@ export class NoteWindows {
     window = new BrowserWindow({
       x, y, width, height, minWidth: 260, minHeight: 240, resizable: true, frame: false,
       show: false, maximizable: false, minimizable: false, skipTaskbar: true,
-      alwaysOnTop: prior.pinned, backgroundColor: '#fff3ba', icon: this.options.icon,
+      alwaysOnTop: false, backgroundColor: '#fff3ba', icon: this.options.icon,
       title: `便签 · ${note.values.title.trim() || '未命名便签'}`,
       webPreferences: { preload: this.options.preload, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, zoomFactor: 1 },
     });
@@ -98,6 +98,7 @@ export class NoteWindows {
         }
       }
       if (!current.isDestroyed() && !this.options.quitting()) {
+        if (prior.pinned) current.setAlwaysOnTop(true, 'pop-up-menu');
         if (focus) { current.show(); current.focus(); } else current.showInactive();
       }
     } catch (error) {
@@ -122,12 +123,18 @@ export class NoteWindows {
   async pin(id: string, pinned: boolean) {
     if (!this.getNote(id)) throw new Error('便签不存在。');
     await this.options.preferences.update(value => { value.noteWindows[id] = { ...value.noteWindows[id] ?? { open: false }, pinned }; });
-    this.windows.get(id)?.setAlwaysOnTop(pinned);
+    const window = this.windows.get(id); const visible = window?.isVisible();
+    window?.setAlwaysOnTop(pinned, pinned ? 'pop-up-menu' : 'normal');
+    if (visible) window?.show();
     this.options.publish();
   }
   flush(id: string): Promise<boolean> {
     const window = this.windows.get(id);
     if (!window || window.isDestroyed() || !window.isVisible()) return Promise.resolve(true);
+    return this.flushWindow(window);
+  }
+  flushWindow(window: BrowserWindow | null): Promise<boolean> {
+    if (!window || window.isDestroyed()) return Promise.resolve(true);
     if (window.webContents.isCrashed()) return Promise.resolve(false);
     return new Promise(resolve => {
       const requestId = crypto.randomUUID();

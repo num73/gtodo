@@ -5,6 +5,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { DataStore } from '../electron/storage';
 import { PreferencesStore } from '../electron/preferences';
 import { nextZoom } from '../src/shared/model';
+import { fitPaneLayout } from '../src/shared/layout';
 import { temporaryDirectory } from './helpers';
 
 test('concurrent commands persist serially and survive a fresh application instance', async t => {
@@ -46,7 +47,7 @@ test('folder, zoom and window preferences survive concurrent updates and a resta
     preferences.update(value => { value.window = window; }),
   ]);
   const reopened = new PreferencesStore(directory); await reopened.initialize();
-  assert.deepEqual(reopened.value, { dataPath, zoom: 150, window, noteWindows: {}, outlook: { enabled: false, target: null } });
+  assert.deepEqual(reopened.value, { dataPath, zoom: 150, window, paneLayout: { sidebar: 224, details: 322 }, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null } });
   await assert.rejects(preferences.update(value => { value.zoom = 500; }));
   assert.equal(preferences.value.zoom, 150);
 });
@@ -58,4 +59,16 @@ test('zoom steps clamp at their limits and reset exactly to 100 percent', () => 
   assert.equal(nextZoom(175, 'reset'), 100);
   assert.equal(nextZoom(100, 150), 150);
   assert.equal(nextZoom(100, 999), 100);
+});
+
+test('pane widths persist locally and shrink only for display when the task area would become too narrow', async t => {
+  const directory = await temporaryDirectory(t); const preferences = new PreferencesStore(directory); await preferences.initialize();
+  await preferences.update(value => { value.paneLayout = { sidebar: 400, details: 600 }; });
+  const reopened = new PreferencesStore(directory); await reopened.initialize();
+  const wide = fitPaneLayout(reopened.value.paneLayout, 1600, true);
+  assert.deepEqual(wide, { sidebar: 400, details: 600 });
+  const smaller = fitPaneLayout(reopened.value.paneLayout, 1121, true);
+  assert.ok(1121 - smaller.sidebar - smaller.details - 12 >= 300);
+  assert.deepEqual(reopened.value.paneLayout, { sidebar: 400, details: 600 });
+  await assert.rejects(preferences.update(value => { value.paneLayout.sidebar = 20; }));
 });

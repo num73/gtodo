@@ -5,6 +5,7 @@ import { writeFile } from 'node:fs/promises';
 import { NoteWindows } from '../electron/note-windows';
 import { DataStore } from '../electron/storage';
 import { PreferencesStore } from '../electron/preferences';
+import { PomodoroWindow } from '../electron/pomodoro-window';
 
 const directory = path.join(__dirname, 'profile');
 app.setName('GTodo Note Test'); app.setPath('userData', directory);
@@ -44,11 +45,28 @@ void app.whenReady().then(async () => {
   await notes.open(second.id);
   assert.equal(BrowserWindow.getAllWindows().length, 1);
   assert.equal(BrowserWindow.getAllWindows()[0].webContents.getURL(), `gtodo://app/index.html?note=${second.id}`);
+  await notes.pin(second.id, true);
+  assert.equal(BrowserWindow.getAllWindows()[0].isAlwaysOnTop(), true);
+  assert.equal(BrowserWindow.getAllWindows()[0].isVisible(), true);
+  await notes.pin(second.id, false);
   assert.equal(store.engine.state.notes.length, 2);
   const reopened = new DataStore(directory); await reopened.initialize();
   assert.deepEqual(reopened.engine.state, store.engine.state);
+  const timerWindow = new PomodoroWindow({ preferences, publish() {}, native: { BrowserWindow, screen, dialog }, report: (event, details) => reports.push({ event, details }), quitting: () => quitting,
+    preload: path.resolve('dist-electron/preload.cjs'), icon: path.resolve('assets/icon.png'), url: 'gtodo://app/index.html' });
+  await timerWindow.open();
+  const nativeTimer = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('?window=pomodoro'))!;
+  assert.ok(nativeTimer); assert.equal(nativeTimer.isVisible(), true);
+  await timerWindow.pin(true); assert.equal(nativeTimer.isAlwaysOnTop(), true); assert.equal(nativeTimer.isVisible(), true);
+  await timerWindow.pin(false); assert.equal(nativeTimer.isAlwaysOnTop(), false); assert.equal(nativeTimer.isVisible(), true);
+  await timerWindow.pin(true);
+  await timerWindow.hide(); assert.equal(nativeTimer.isDestroyed(), true); assert.equal(preferences.value.pomodoroWindow.open, false);
+  await timerWindow.open(false);
+  const restoredTimer = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('?window=pomodoro'))!;
+  assert.equal(restoredTimer.isAlwaysOnTop(), true); assert.equal(restoredTimer.isVisible(), true);
+  await timerWindow.hide();
   await writeFile(path.join(__dirname, 'result.json'), JSON.stringify({ passed: true, reports, attempts: Object.fromEntries(attempts) }, null, 2));
-  console.log('Native Electron ERR_FAILED (-2) recovery, cleanup and saved-content checks passed.');
+  console.log('Native Electron window recovery, timer pin/hide and saved-content checks passed.');
 }).then(() => {
   quitting = true; for (const window of BrowserWindow.getAllWindows()) window.destroy(); app.quit();
 }).catch(async error => {

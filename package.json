@@ -1,7 +1,7 @@
 {
   "name": "gtodo",
   "productName": "GTodo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "支持番茄钟、桌面便签、日历同步与自适应缩放的桌面待办应用",
   "author": "GTodo",
@@ -20,8 +20,12 @@
   },
   "dependencies": {
     "lucide-react": "^1.75.0",
+    "mdast-util-from-markdown": "^2.1.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -54,7 +58,12 @@
       "assets/icon.ico",
       "package.json"
     ],
-    "extraResources": [{ "from": "dist-electron/outlook-bridge.ps1", "to": "outlook-bridge.ps1" }],
+    "extraResources": [
+      {
+        "from": "dist-electron/outlook-bridge.ps1",
+        "to": "outlook-bridge.ps1"
+      }
+    ],
     "win": {
       "target": [
         "portable"

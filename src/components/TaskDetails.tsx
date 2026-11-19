@@ -1,13 +1,29 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { X, Star, Sun, CalendarDays, Bell, Repeat2, List, Trash2, Plus, Check, Circle, StickyNote, Timer } from 'lucide-react';
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { X, Star, Sun, CalendarDays, Bell, Repeat2, List, Trash2, Plus, Check, Circle, StickyNote, Timer, Link2 } from 'lucide-react';
 import { localDate, type Command, type Step, type Task, type TaskList, type TaskValues } from '../shared/model';
+import type { DocumentFormat } from '../shared/documents';
+import { FieldDraft, registerMainDraft } from '../notes/draft';
+import DocumentEditor from './DocumentEditor';
+import Modal from './Modal';
 
-export default function TaskDetails({ task, lists, steps, dispatch, close, remove, overlay = false, createNote, focusTask }: { task: Task; lists: TaskList[]; steps: Step[]; dispatch: (command: Command) => Promise<boolean>; close: () => void; remove: (task: Task) => void; overlay?: boolean; createNote?: (input: { title: string; content: string }) => Promise<void>; focusTask?: (task: Task) => void }) {
+export default function TaskDetails({ task, lists, steps, dispatch, close, remove, overlay = false, createLinkedNote, linkedNoteId, focusTask }: { task: Task; lists: TaskList[]; steps: Step[]; dispatch: (command: Command) => Promise<boolean>; close: () => void; remove: (task: Task) => void; overlay?: boolean; createLinkedNote?: (taskId: string) => Promise<void>; linkedNoteId?: string; focusTask?: (task: Task) => void }) {
   const v = task.values;
   const [title, setTitle] = useState(v.title);
-  const [notes, setNotes] = useState(v.notes);
+  const [noteDraft] = useState(() => new FieldDraft<{ content: string; format: DocumentFormat }>({ content: v.notes, format: v.notesFormat }, async patch => {
+    const taskPatch: Partial<TaskValues> = {};
+    if (patch.content !== undefined) taskPatch.notes = patch.content;
+    if (patch.format !== undefined) taskPatch.notesFormat = patch.format;
+    if (!await dispatch({ type: 'task.update', id: task.id, patch: taskPatch })) throw new Error('备注未能保存，请重试。');
+    const saved = (await window.gtodo!.getState()).workspace.tasks.find(item => item.id === task.id);
+    if (!saved) throw new Error('无法读取备注的保存结果，请重试。');
+    return { content: saved.values.notes, format: saved.values.notesFormat };
+  }));
+  const noteSnapshot = useSyncExternalStore(noteDraft.subscribe, noteDraft.getSnapshot);
+  const notes = noteSnapshot.values.content;
   const [newStep, setNewStep] = useState('');
-  const [copying, setCopying] = useState(false);
+  const [linking, setLinking] = useState(false);
+  const [confirmLink, setConfirmLink] = useState(false);
+  const [linkError, setLinkError] = useState('');
   const panel = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -17,11 +33,23 @@ export default function TaskDetails({ task, lists, steps, dispatch, close, remov
     return () => { if (!panel.current?.isConnected && previous?.isConnected) previous.focus(); };
   }, [overlay]);
   useEffect(() => setTitle(v.title), [task.id, v.title]);
-  useEffect(() => setNotes(v.notes), [task.id, v.notes]);
+  useEffect(() => noteDraft.receive({ content: v.notes, format: v.notesFormat }), [noteDraft, v.notes, v.notesFormat]);
+  useEffect(() => registerMainDraft(noteDraft), [noteDraft]);
+  useEffect(() => () => { void noteDraft.flush().catch(() => {}); noteDraft.dispose(); }, [noteDraft]);
   const update = (patch: Partial<TaskValues>) => dispatch({ type: 'task.update', id: task.id, patch });
+  async function openLinkedNote(create: boolean) {
+    setLinking(true); setLinkError('');
+    try {
+      await noteDraft.flush();
+      if (create) { await createLinkedNote!(task.id); setConfirmLink(false); }
+      else if (linkedNoteId) await window.gtodo!.noteWindow({ type: 'open', id: linkedNoteId });
+    } catch (error) { setLinkError((error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+    finally { setLinking(false); }
+  }
   async function addStep(event: FormEvent) { event.preventDefault(); if (newStep.trim() && await dispatch({ type: 'step.add', taskId: task.id, title: newStep.trim() })) setNewStep(''); }
   const reminderLocal = v.reminder ? `${localDate(new Date(v.reminder))}T${String(new Date(v.reminder).getHours()).padStart(2, '0')}:${String(new Date(v.reminder).getMinutes()).padStart(2, '0')}` : '';
-  return <aside ref={panel} className={`details ${overlay ? 'details-overlay' : ''}`} aria-label="任务详情" role={overlay ? 'dialog' : undefined} aria-modal={overlay || undefined} onKeyDown={event => {
+  return <aside id="task-details" ref={panel} className={`details ${overlay ? 'details-overlay' : ''}`} aria-label="任务详情" role={overlay ? 'dialog' : undefined} aria-modal={overlay || undefined} onKeyDown={event => {
+    if (confirmLink) { event.stopPropagation(); return; }
     if (event.key === 'Escape') { event.stopPropagation(); close(); }
     if (!overlay || event.key !== 'Tab') return;
     const focusable = [...(panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, textarea, select') ?? [])];
@@ -44,13 +72,22 @@ export default function TaskDetails({ task, lists, steps, dispatch, close, remov
       </div>
       {v.repeat !== 'none' && <p className="detail-hint">完成后创建下一次任务。</p>}
       {v.reminder && <p className="detail-hint">提醒需保持应用运行。</p>}
-      <div className="detail-card note-card"><label htmlFor="notes"><StickyNote size={17} />备注</label><textarea id="notes" placeholder="添加备注" maxLength={100000} value={notes} rows={6} onChange={event => setNotes(event.target.value)} onBlur={() => { if (notes !== v.notes) void update({ notes }); }} /></div>
-      {createNote && <button className="detail-card copy-to-note" disabled={copying} onClick={async () => {
-        setCopying(true);
-        try { await createNote({ title: (title.trim() || v.title).slice(0, 200), content: [v.dueDate ? `截止日期：${v.dueDate}` : '', steps.map(step => `${step.values.completed ? '☑' : '☐'} ${step.values.title}`).join('\n'), notes].filter(Boolean).join('\n\n').slice(0, 100000) }); }
-        finally { setCopying(false); }
-      }}><StickyNote size={18} />{copying ? '正在创建…' : '复制为桌面便签'}</button>}
+      <div className="detail-card note-card"><label><StickyNote size={17} />备注</label>
+        <DocumentEditor target={{ kind: 'task', id: task.id }} label="备注" value={notes} format={noteSnapshot.values.format} assets={v.notesAssets} onChange={value => noteDraft.change('content', value)}
+          onFormatChange={async format => { noteDraft.change('format', format); await noteDraft.flush(); }} onSave={() => noteDraft.flush()} />
+        <div className={`document-save-status ${noteSnapshot.error ? 'is-error' : ''}`} role="status">{noteSnapshot.error || (noteSnapshot.dirty || noteSnapshot.saving ? '正在保存…' : '已保存')}{noteSnapshot.error && <button onClick={() => void noteDraft.flush().catch(() => {})}>重试</button>}</div>
+      </div>
+      {createLinkedNote && <button className="detail-card linked-note-button" disabled={linking} onClick={() => {
+        if (linkedNoteId) void openLinkedNote(false); else { setLinkError(''); setConfirmLink(true); }
+      }}>{linkedNoteId ? <Link2 size={18} /> : <StickyNote size={18} />}{linking ? '正在打开…' : linkedNoteId ? '打开关联便签' : '创建关联便签'}</button>}
+      {linkError && !confirmLink && <p className="document-error" role="alert">{linkError}</p>}
     </div>
     <footer className="details-footer"><span>创建于 {new Date(v.createdAt).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}</span><button className="icon-button danger-text" aria-label="删除任务" onClick={() => remove(task)}><Trash2 size={18} /></button></footer>
+    {confirmLink && <Modal title="创建关联便签" close={() => setConfirmLink(false)} busy={linking}>
+      <div className="linked-note-confirm"><p>备注与便签的内容、格式和图片双向同步。删除任意一方会解除关联，另一方保留内容。</p>
+        {linkError && <p className="document-error" role="alert">{linkError}</p>}
+        <div className="form-footer"><button className="button secondary" disabled={linking} onClick={() => setConfirmLink(false)}>取消</button><button className="button primary" disabled={linking} onClick={() => void openLinkedNote(true)}>{linking ? '正在创建…' : '确认创建'}</button></div>
+      </div>
+    </Modal>}
   </aside>;
 }
