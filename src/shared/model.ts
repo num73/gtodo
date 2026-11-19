@@ -26,7 +26,7 @@ export const taskValuesSchema = z.object({
   seriesId: id, createdAt: z.string().datetime(), completedAt: z.string().datetime().nullable(), deleted: z.boolean(),
 });
 export const stepValuesSchema = z.object({ taskId: id, title, completed: z.boolean(), deleted: z.boolean(), originId: id });
-export const noteColors = ['yellow', 'purple', 'blue', 'green', 'rose'] as const;
+export const noteColors = ['yellow', 'orange', 'coral', 'rose', 'purple', 'indigo', 'blue', 'teal', 'mint', 'green', 'gray', 'white'] as const;
 export const noteValuesSchema = z.object({
   title: z.string().max(200), content: z.string().max(100000), color: z.enum(noteColors),
   format: documentFormatSchema.default('text'), assets: assetMapSchema.default({}),

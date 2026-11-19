@@ -1,17 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
 import { Code, Eye, FolderOpen, ImagePlus, Pencil } from 'lucide-react';
-import { assetURL, normalizeAssetPath, MAX_IMAGE_BYTES, type AssetMap, type DocumentFormat, type DocumentTarget } from '../shared/documents';
-
-function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [src]);
-  return !src || failed ? <span className="document-image-missing" role="img" aria-label={alt || '图片'}>{alt || '图片'} · 图片暂不可用</span>
-    : <img src={src} alt={alt ?? ''} loading="lazy" onError={() => setFailed(true)} />;
-}
+import { MAX_IMAGE_BYTES, type AssetMap, type DocumentFormat, type DocumentTarget } from '../shared/documents';
 export default function DocumentEditor({ target, label, value, format, assets, onChange, onFormatChange, onSave, disabled = false, sticky = false, toolbarTarget, collapsedToolbar = false, onToolbarAction }: {
   target: DocumentTarget; label: string; value: string; format: DocumentFormat; assets: AssetMap;
   onChange: (value: string) => void; onFormatChange: (format: DocumentFormat) => Promise<void>; onSave: () => Promise<void>;
@@ -22,6 +12,7 @@ export default function DocumentEditor({ target, label, value, format, assets, o
   const latest = useRef({ value, format }); latest.current = { value, format };
   const selection = useRef({ start: value.length, end: value.length });
   const [preview, setPreview] = useState(false);
+  const [Preview, setPreviewComponent] = useState<typeof import('./MarkdownPreview').default | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const api = window.gtodo;
@@ -60,7 +51,14 @@ export default function DocumentEditor({ target, label, value, format, assets, o
         void execute(async () => { await onFormatChange(mode); if (mode === 'text') setPreview(false); });
       }}><option value="text">纯文本</option><option value="markdown">Markdown</option></select>
       {format === 'markdown' && <>
-        <button type="button" aria-label={`${preview ? '编辑' : '预览'}${label}`} title={preview ? '编辑' : '预览'} aria-pressed={preview} onClick={() => { remember(); setPreview(!preview); onToolbarAction?.(); void onSave().catch(() => {}); }}>{preview ? <Pencil size={15} /> : <Eye size={15} />}<span>{preview ? '编辑' : '预览'}</span></button>
+        <button type="button" aria-label={`${preview ? '编辑' : '预览'}${label}`} title={preview ? '编辑' : '预览'} aria-pressed={preview} disabled={busy} onClick={() => {
+          remember();
+          void execute(async () => {
+            await onSave();
+            if (!preview && !Preview) { const module = await import('./MarkdownPreview'); setPreviewComponent(() => module.default); }
+            setPreview(!preview);
+          }, true);
+        }}>{preview ? <Pencil size={15} /> : <Eye size={15} />}<span>{preview ? '编辑' : '预览'}</span></button>
         <button type="button" aria-label={`插入图片到${label}`} title="插入图片，也可粘贴或拖入" disabled={disabled || busy} onMouseDown={event => event.preventDefault()} onClick={() => {
           const before = latest.current.value; const selected = { ...selection.current };
           void execute(async () => { await onSave(); const image = await api!.pickDocumentImage(target); if (image) { insert(imageMarkdown(image), before, selected); await onSave(); } }, true);
@@ -74,15 +72,7 @@ export default function DocumentEditor({ target, label, value, format, assets, o
     </div>;
   return <div className={`document-editor ${sticky ? 'document-editor-sticky' : ''}`} data-format={format}>
     {collapsedToolbar ? (toolbarTarget ? createPortal(toolbar, toolbarTarget) : null) : toolbar}
-    {preview && format === 'markdown' ? <div className="markdown-preview" aria-label={`${label}预览`}>
-      <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: false }]]} skipHtml urlTransform={(url, key) => {
-        if (key === 'src') { const relative = normalizeAssetPath(url); return relative ? assetURL(target, relative, assets[relative]) : /^https:\/\//i.test(url) ? url : ''; }
-        return /^https?:\/\//i.test(url) ? url : '';
-      }} components={{
-        img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
-        a: ({ href, children }) => href ? <a href={href} onClick={event => { event.preventDefault(); void execute(() => api!.openLink(href)); }}>{children}</a> : <span>{children}</span>,
-      }}>{value || '*暂无内容*'}</Markdown>
-    </div> : <textarea ref={editor} className="document-source" aria-label={label} placeholder={label === '备注' ? '添加备注' : '输入内容'} maxLength={100000} value={value} disabled={disabled} rows={6} spellCheck={false}
+    {preview && format === 'markdown' && Preview ? <Preview value={value} label={label} target={target} assets={assets} openLink={url => { void execute(() => api!.openLink(url)); }} /> : <textarea ref={editor} className="document-source" aria-label={label} placeholder={label === '备注' ? '添加备注' : '输入内容'} maxLength={100000} value={value} disabled={disabled} rows={6} spellCheck={false}
       onChange={event => { latest.current.value = event.target.value; onChange(event.target.value); remember(); }} onSelect={remember}
       onBlur={() => { remember(); void onSave().catch(() => {}); }}
       onKeyDown={event => { if (event.ctrlKey && event.key.toLowerCase() === 's') { event.preventDefault(); void execute(onSave); } }}

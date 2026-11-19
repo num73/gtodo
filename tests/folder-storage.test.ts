@@ -5,6 +5,7 @@ import { mkdir, copyFile, readFile, writeFile, stat, readdir } from 'node:fs/pro
 import { DataStore } from '../electron/storage';
 import { PreferencesStore } from '../electron/preferences';
 import { FolderStorage } from '../electron/folder-storage';
+import { DocumentFiles } from '../electron/document-files';
 import { WorkspaceEngine } from '../src/shared/engine';
 import { parseWorkspace } from '../src/shared/model';
 import { temporaryDirectory } from './helpers';
@@ -19,6 +20,41 @@ async function device(t: TestContext) {
 async function transfer(source: FolderStorage, destination: FolderStorage) {
   await copyFile(source.ownFile, path.join(destination.directory, path.basename(source.ownFile)));
 }
+test('editing and quitting during the first folder scan preserves both incoming and local changes', async t => {
+  const a = await device(t);
+  await a.folder.update(engine => engine.apply({ type: 'task.add', title: 'Cached title', listId: 'inbox' }));
+  const taskId = a.local.engine.state.tasks[0].id;
+  const peer = new WorkspaceEngine('startup-peer', a.local.engine.state);
+  peer.apply({ type: 'task.update', id: taskId, patch: { title: 'Incoming title' } });
+  await writeFile(path.join(a.folder.directory, 'device-startup-peer.json'), JSON.stringify(peer.state));
+
+  const reopened = new DataStore(a.root); await reopened.initialize();
+  const documents = new DocumentFiles(a.root);
+  const readChanges = documents.readChanges.bind(documents);
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const scanning = new Promise<void>(resolve => { entered = resolve; });
+  let first = true;
+  documents.readChanges = async (...args) => {
+    if (first) { first = false; entered(); await gate; }
+    return readChanges(...args);
+  };
+  const folder = new FolderStorage(reopened, a.preferences, () => {}, documents);
+  const initializing = folder.initialize();
+  await scanning;
+  assert.equal(reopened.engine.state.tasks[0].values.title, 'Cached title');
+  const editing = folder.update(engine => engine.apply({ type: 'task.update', id: taskId, patch: { notes: 'Early local edit' } }));
+  const quitting = folder.flush();
+  release();
+  await Promise.all([initializing, editing, quitting]);
+  assert.equal(folder.status.error, null);
+  const saved = new DataStore(a.root); await saved.initialize();
+  assert.equal(saved.engine.state.tasks[0].values.title, 'Incoming title');
+  assert.equal(saved.engine.state.tasks[0].values.notes, 'Early local edit');
+  const snapshot = parseWorkspace(JSON.parse(await readFile(folder.ownFile, 'utf8')));
+  assert.equal(snapshot.tasks[0].values.notes, 'Early local edit');
+});
 test('upgrading keeps old tasks and device identity while exporting a folder snapshot', async t => {
   const root = await temporaryDirectory(t); const old = new DataStore(root); await old.initialize();
   await old.update(engine => engine.apply({ type: 'task.add', title: '旧版本任务', listId: 'inbox' }));

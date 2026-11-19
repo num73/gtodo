@@ -24,6 +24,10 @@ app.setName('GTodo');
 app.setAppUserModelId('app.gtodo.desktop');
 if (process.env.GTODO_DATA_DIR && !app.isPackaged) app.setPath('userData', path.resolve(process.env.GTODO_DATA_DIR));
 const diagnostics = new Diagnostics(app.getPath('userData'));
+const startupStages: Record<string, number> = {};
+let startupReported = false;
+const startupMark = (name: string) => { startupStages[name] ??= Math.round(process.uptime() * 1000); };
+startupMark('mainEntryMs');
 protocol.registerSchemesAsPrivileged([{ scheme: 'gtodo', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
@@ -32,6 +36,9 @@ let mainRendererReady = false;
 let store: DataStore;
 let preferences: PreferencesStore;
 let folders: FolderStorage;
+let initialFolderRead: Promise<void> = Promise.resolve();
+let startupWindows: Promise<void> = Promise.resolve();
+let folderReady = false;
 let notes: NoteWindows;
 let outlook: OutlookSync | undefined;
 let pomodoro: PomodoroTimer | undefined;
@@ -196,6 +203,7 @@ function createWindow() {
 }
 async function initialize() {
   await app.whenReady(); Menu.setApplicationMenu(null);
+  startupMark('electronReadyMs');
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   const root = path.join(app.getAppPath(), 'dist');
@@ -222,8 +230,10 @@ async function initialize() {
   });
   // Preserve the 1.0 local workspace and device identity; never load old cloud credentials.
   store = new DataStore(app.getPath('userData')); await store.initialize();
+  startupMark('localDataMs');
   preferences = new PreferencesStore(app.getPath('userData')); await preferences.initialize();
-  folders = new FolderStorage(store, preferences, () => { changed(); outlook?.workspaceChanged(); }); await folders.initialize();
+  startupMark('preferencesMs');
+  folders = new FolderStorage(store, preferences, () => { changed(); if (folderReady) outlook?.workspaceChanged(); });
   outlook = new OutlookSync(preferences, () => store.engine.state,
     createOutlookBridge(app.isPackaged ? path.join(process.resourcesPath, 'outlook-bridge.ps1') : path.join(app.getAppPath(), 'dist-electron/outlook-bridge.ps1')), changed);
   notes = new NoteWindows({ preferences, workspace: () => store.engine.state, publish: changed, quitting: () => quitting,
@@ -265,7 +275,13 @@ async function initialize() {
     const layout = paneLayoutSchema.parse(value);
     await preferences.update(value => { value.paneLayout = layout; }); changed(); return state();
   });
-  handle('gtodo:state', (_value, event) => { if (event.sender === window?.webContents) mainRendererReady = true; return state(); }, true, true);
+  handle('gtodo:state', (_value, event) => {
+    if (event.sender === window?.webContents) {
+      mainRendererReady = true;
+      if (!startupReported) { startupReported = true; startupMark('firstStateMs'); diagnostics.report('startup-local-ready', { ...startupStages }); }
+    }
+    return state();
+  }, true, true);
   handle('gtodo:command', async (value, event) => {
     const command = commandSchema.parse(value);
     if (notes.owner(event.sender)) {
@@ -349,9 +365,10 @@ async function initialize() {
   handle('gtodo:outlook-list', () => outlook!.list());
   handle('gtodo:outlook-configure', async value => {
     const input = z.object({ enabled: z.boolean(), calendarId: z.string().regex(/^[a-f\d]{64}$/).optional() }).parse(value);
+    if (input.enabled) await initialFolderRead;
     await outlook!.configure(input.enabled, input.calendarId); return state();
   });
-  handle('gtodo:outlook-sync', async () => { await outlook!.sync(); return state(); });
+  handle('gtodo:outlook-sync', async () => { await initialFolderRead; await outlook!.sync(); return state(); });
   handle('gtodo:zoom', async value => {
     const action = z.union([z.enum(['in', 'out', 'reset']), z.number().refine(number => zoomSteps.includes(number as typeof zoomSteps[number]))]).parse(value);
     await setZoom(action); return state();
@@ -381,14 +398,26 @@ async function initialize() {
   });
   ipcMain.on('gtodo:quit', event => { trusted(event); app.quit(); });
   createWindow(); createTray();
-  if (await notes.restore()) {
-    store.notice = [store.notice, '部分便签未能打开，内容已保留，可在“桌面便签”中重新打开。'].filter(Boolean).join('\n');
-    changed();
-  }
-  if (preferences.value.pomodoroWindow.open) {
-    try { await pomodoroWindow.open(false); }
-    catch { store.notice = '番茄钟窗口未能恢复，可从左侧栏重新打开。'; changed(); }
-  }
+  startupMark('windowCreatedMs');
+  // Display the local cache first. Folder reconciliation stays on its existing
+  // serialized queue, so edits still merge external changes before committing.
+  const folderStarted = performance.now();
+  initialFolderRead = folders.initialize();
+  startupWindows = initialFolderRead.then(async () => {
+    folderReady = true;
+    diagnostics.report('startup-folder-ready', { elapsedMs: Math.round(process.uptime() * 1000), durationMs: Math.round(performance.now() - folderStarted) });
+    if (quitting) return;
+    if (await notes.restore()) {
+      store.notice = [store.notice, '部分便签未能打开，内容已保留，可在“桌面便签”中重新打开。'].filter(Boolean).join('\n');
+      changed();
+    }
+    if (preferences.value.pomodoroWindow.open) {
+      try { await pomodoroWindow!.open(false); }
+      catch { store.notice = '番茄钟窗口未能恢复，可从左侧栏重新打开。'; changed(); }
+    }
+  });
+  await startupWindows;
+  if (quitting) return;
   outlook.start();
   void pomodoro.tick().catch(() => {});
   let ticking = false;
@@ -413,7 +442,7 @@ async function initialize() {
     }
   }, 15000).unref();
 }
-app.on('second-instance', () => { if (preferences && !quitting) showMain(); });
+app.on('second-instance', () => { if (window && !quitting && !preparingToQuit) showMain(); });
 app.on('window-all-closed', () => { if (!tray) app.quit(); });
 let flushedOnQuit = false;
 let preparingToQuit = false;
@@ -424,6 +453,9 @@ app.on('before-quit', event => {
     preparingToQuit = true;
     void (async () => {
       if (window && !window.isDestroyed()) window.setEnabled(false);
+      // A quit from the early main window must include any windows still being
+      // restored, so no late renderer can appear after the final draft flush.
+      await startupWindows.catch(() => {});
       pomodoroWindow?.setEnabled(false);
       if (notes && !(await Promise.all([notes.flushAll(), mainRendererReady ? notes.flushWindow(window) : Promise.resolve(true)])).every(Boolean)) throw new Error('有备注或便签尚未完成保存，已取消退出。请检查保存提示后重试。');
       if (boundsTimer) clearTimeout(boundsTimer);

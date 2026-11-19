@@ -5,7 +5,10 @@ import { NoteDraft } from './draft';
 import DocumentEditor from '../components/DocumentEditor';
 import { linkedTaskForNote } from '../shared/note-links';
 
-export const noteColorNames = { yellow: '黄色', purple: '紫色', blue: '蓝色', green: '绿色', rose: '粉色' };
+export const noteColorNames = {
+  yellow: '黄色', orange: '橙色', coral: '珊瑚色', rose: '粉色', purple: '紫色', indigo: '靛蓝',
+  blue: '蓝色', teal: '青色', mint: '薄荷色', green: '绿色', gray: '灰色', white: '白色',
+} satisfies Record<typeof noteColors[number], string>;
 export default function StickyNoteWindow({ id }: { id: string }) {
   const [state, setState] = useState<AppState | null>(null);
   const [error, setError] = useState('');
@@ -70,7 +73,7 @@ export function NoteEditor({ note, state, api }: { note: Note; state: AppState; 
       </div>
     </header>
     {toolsOpen && <div id="sticky-edit-options" ref={toolsRef} className="sticky-tools-popover" role="dialog" aria-label="便签编辑选项">
-      <div className="sticky-palette" aria-label="便签颜色">{noteColors.map(color => <button key={color} aria-label={`${noteColorNames[color]}便签`} title={noteColorNames[color]} aria-pressed={snapshot.values.color === color} className={`sticky-color sticky-${color}`} disabled={note.values.deleted} onClick={() => draft.change('color', color)}>{snapshot.values.color === color && <Check size={12} />}</button>)}</div>
+      <div className="sticky-palette" role="group" aria-label="便签颜色">{noteColors.map(color => <button key={color} aria-label={`${noteColorNames[color]}便签`} title={noteColorNames[color]} aria-pressed={snapshot.values.color === color} className={`sticky-color sticky-${color}`} disabled={note.values.deleted} onClick={() => draft.change('color', color)}>{snapshot.values.color === color && <Check size={14} />}</button>)}</div>
       <div ref={setToolbarTarget} />
       <div className="sticky-menu-actions">
         <button disabled={busy} onClick={() => void execute(async () => { await api.createNote(); setToolsOpen(false); })}><Plus size={15} />新建便签</button>

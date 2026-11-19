@@ -15,8 +15,9 @@
     "test": "tsx --test tests/*.test.ts",
     "test:notes": "node scripts/test-notes-native.mjs",
     "test:outlook": "tsx scripts/test-outlook-native.ts",
+    "bench:startup": "node scripts/benchmark-startup.mjs",
     "pack": "npm run build && electron-builder --win --dir",
-    "dist": "npm run build && electron-builder --win portable --x64"
+    "dist": "npm run build && electron-builder --win zip portable --x64"
   },
   "dependencies": {
     "lucide-react": "^1.75.0",
@@ -48,6 +49,8 @@
     "appId": "app.gtodo.desktop",
     "productName": "GTodo",
     "asar": true,
+    "artifactName": "GTodo-v${version}-Windows-${arch}.${ext}",
+    "electronLanguages": ["zh-CN", "zh-TW", "en-US"],
     "directories": {
       "output": "release"
     },
@@ -56,7 +59,9 @@
       "dist-electron/**/*",
       "assets/icon.png",
       "assets/icon.ico",
-      "package.json"
+      "package.json",
+      "!node_modules/**/*",
+      "!dist-electron/**/*.map"
     ],
     "extraResources": [
       {
@@ -66,6 +71,7 @@
     ],
     "win": {
       "target": [
+        "zip",
         "portable"
       ],
       "icon": "assets/icon.ico",
