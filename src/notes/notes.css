@@ -1,0 +1,65 @@
+.sticky-yellow { --paper: #fffbea; --paper-ink: #403a25; --paper-top: #f7efce; --paper-muted: #756a4d; }
+.sticky-purple { --paper: #f4f0fb; --paper-ink: #443b55; --paper-top: #eae3f5; --paper-muted: #746985; }
+.sticky-blue { --paper: #eef5fc; --paper-ink: #34485b; --paper-top: #dfeaf6; --paper-muted: #64788b; }
+.sticky-green { --paper: #eef7ed; --paper-ink: #3d503d; --paper-top: #dfeedd; --paper-muted: #697e66; }
+.sticky-rose { --paper: #fceff2; --paper-ink: #593f47; --paper-top: #f4e0e5; --paper-muted: #846971; }
+.sticky-sheet { height: 100dvh; width: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--paper); color: var(--paper-ink); border: 1px solid #00000018; }
+.sticky-dragbar { flex: 0 0 34px; display: flex; align-items: center; justify-content: space-between; padding-left: 12px; background: var(--paper-top); border-bottom: 1px solid #0000000c; -webkit-app-region: drag; user-select: none; }
+.sticky-window-label { display: flex; gap: 6px; align-items: center; font-size: 11px; font-weight: 500; }
+.sticky-window-controls { display: flex; align-self: stretch; -webkit-app-region: no-drag; }
+.sticky-window-controls button { width: 33px; display: grid; place-items: center; color: inherit; }
+.sticky-sheet button:hover { background: #0000000a; }
+.sticky-sheet button:focus-visible { outline: 2px solid var(--paper-ink); outline-offset: -3px; }
+.sticky-window-controls .is-pinned { background: #0000000a; }
+.sticky-palette { display: flex; gap: 8px; align-items: center; padding: 12px 16px 8px; flex-shrink: 0; }
+.sticky-color { background: var(--paper); color: var(--paper-ink); border: 1px solid #00000030; border-radius: 3px; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; }
+.sticky-color[aria-pressed=true] { outline: 1px solid currentColor; outline-offset: 2px; }
+.sticky-palette > span { margin-left: auto; font-size: 10px; color: var(--paper-muted); }
+.sticky-title { flex-shrink: 0; margin: 3px 16px 8px; width: calc(100% - 32px); background: transparent; font-weight: 600; font-size: 17px; line-height: 1.5; color: inherit; padding: 4px 0; border: 0; outline: none; }
+.sticky-title::placeholder { color: var(--paper-muted); font-weight: 400; }
+.sticky-content { flex: 1; min-height: 35px; width: 100%; resize: none; border: 0; background: transparent; color: inherit; padding: 0 16px 16px; font-family: inherit; font-size: 14px; line-height: 1.8; outline: none; overflow-wrap: anywhere; }
+.sticky-content::placeholder { color: var(--paper-muted); }
+.sticky-footer { flex-shrink: 0; min-height: 32px; padding: 0 8px 0 15px; display: flex; gap: 5px; align-items: center; border-top: 1px solid #00000010; }
+.sticky-save-status { display: flex; gap: 5px; align-items: center; color: var(--paper-muted); font-size: 10px; flex: 1; }
+.sticky-footer > div { display: flex; }
+.sticky-footer button { width: 30px; height: 30px; display: grid; place-items: center; color: var(--paper-muted); }
+.sticky-message { padding: 8px 12px; font-size: 12px; line-height: 1.6; background: #ffffff60; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.sticky-message span { flex: 1; min-width: 0; }
+.sticky-message button { flex-shrink: 0; color: inherit; font-size: 11px; display: flex; gap: 3px; align-items: center; padding: 5px; }
+.sticky-error { color: #a12b37; }
+.sticky-folder-warning { padding: 5px 15px; font-size: 11px; color: #805a17; background: #ffffff35; }
+.sticky-delete-confirm { flex-shrink: 0; padding: 9px 12px; display: flex; align-items: center; gap: 10px; font-size: 12px; background: #ffffff60; }
+.sticky-delete-confirm span { flex: 1; }
+.sticky-delete-confirm button { padding: 6px 8px; color: inherit; border-radius: 3px; }
+.sticky-loading { height: 100dvh; background: #fffbea; color: #756a4d; display: grid; place-content: center; justify-items: center; gap: 10px; font-size: 13px; }
+.notes-gallery { padding: 20px 22px; }
+.notes-gallery-intro { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.notes-gallery-intro p { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.notes-gallery-intro .button { flex-shrink: 0; }
+.notes-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.note-preview { min-width: 0; background: var(--paper); color: var(--paper-ink); border-radius: 4px; overflow: hidden; border: 1px solid #00000018; }
+.note-preview-body { display: block; width: 100%; height: 140px; text-align: left; padding: 14px 16px; color: inherit; }
+.note-preview h4 { font-size: 14px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; margin: 0 0 8px; }
+.note-preview p { white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; color: var(--paper-muted); }
+.note-preview footer { display: flex; align-items: center; padding: 4px 8px 4px 16px; border-top: 1px solid #00000010; }
+.note-preview footer span { flex: 1; display: flex; gap: 5px; align-items: center; font-size: 10px; color: var(--paper-muted); }
+.note-preview footer button { width: 29px; height: 28px; display: grid; place-items: center; color: inherit; border-radius: 3px; }
+.note-preview footer button:hover { background: #00000008; }
+.notes-gallery-hint { color: var(--muted); font-size: 12px; line-height: 1.7; margin-top: 18px; }
+.notes-gallery-error { margin-top: 12px; padding: 10px; background: #fff3f3; color: #a12b37; font-size: 12px; border-radius: 3px; }
+.notes-empty { padding: 40px 16px; text-align: center; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; }
+.notes-empty strong { font-size: 14px; font-weight: 400; }
+.copy-to-note { display: flex; width: 100%; gap: 10px; align-items: center; color: var(--accent); font-size: 13px; padding: 12px; }
+@media (max-width: 560px) {
+  .notes-gallery { padding: 16px; }
+  .notes-grid { grid-template-columns: 1fr; }
+  .notes-gallery-intro { flex-wrap: wrap; }
+}
+@media (max-height: 300px) {
+  .sticky-palette { padding-top: 7px; padding-bottom: 5px; }
+  .sticky-title { margin-top: 0; margin-bottom: 4px; }
+}
+@media (max-width: 300px) {
+  .sticky-palette > span { display: none; }
+  .sticky-dragbar { padding-left: 9px; }
+}
