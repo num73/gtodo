@@ -229,9 +229,12 @@ h1, h2, h3, h4, p { margin: 0; }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50; display: flex; align-items: center; gap: 10px; border: 1px solid #343d4c; border-radius: 4px; background: #303845; color: #fff; padding: 10px 13px; font-size: 12px; max-width: min(600px, calc(100vw - 24px)); line-height: 1.7; }
 .toast button { color: #d6e5ff; font-size: 12px; display: flex; align-items: center; white-space: nowrap; }
 .toast > span { overflow-wrap: anywhere; }
-.task-context-menu { position: fixed; z-index: 60; width: 156px; max-width: calc(100vw - 16px); padding: 4px; background: #fff; border: 1px solid var(--line); border-radius: 4px; }
+.task-context-menu { position: fixed; z-index: 60; width: 208px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 4px; background: #fff; border: 1px solid var(--line); border-radius: 4px; }
 .task-context-menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; text-align: left; font-size: 13px; border-radius: 2px; }
-.task-context-menu button:hover, .task-context-menu button:focus-visible { background: #fff0f1; outline: none; }
+.task-context-menu button svg { flex-shrink: 0; }
+.task-context-menu button:hover, .task-context-menu button:focus-visible { background: var(--hover); outline: none; }
+.task-context-menu button.danger-text:hover, .task-context-menu button.danger-text:focus-visible { background: #fff0f1; }
+.task-menu-divider { height: 1px; margin: 4px 6px; background: var(--line); }
 .loading-app { height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: #fff; }
 .loading-app h1 { font-size: 24px; font-weight: 600; }
 .loading-app p { font-size: 13px; color: var(--muted); max-width: 440px; padding: 0 16px; line-height: 1.8; text-align: center; }

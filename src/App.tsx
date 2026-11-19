@@ -4,7 +4,7 @@ import type { LucideIcon } from 'lucide-react';
 import { colors, localDate, zoomSteps, type AppState, type Command, type Task, type TaskList, type ZoomAction } from './shared/model';
 import Settings from './components/Settings';
 import TaskDetails from './components/TaskDetails';
-import TaskContextMenu from './components/TaskContextMenu';
+import TaskContextMenu, { type TaskMenuAction } from './components/TaskContextMenu';
 import { linkedNoteForTask } from './shared/note-links';
 import Modal from './components/Modal';
 import NotesGallery from './notes/NotesGallery';
@@ -68,6 +68,7 @@ export default function App() {
   const [today, setToday] = useState(localDate());
   const searchRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLInputElement>(null);
+  const taskButtons = useRef(new Map<string, HTMLButtonElement>());
   const notify = useCallback((text: string, undo?: () => void) => setToast({ text, undo }), []);
   useEffect(() => {
     if (!api) { setLoadError('请打开 GTodo 桌面应用。浏览器预览无法访问本地数据文件夹。'); return; }
@@ -160,6 +161,7 @@ export default function App() {
   const pending = filtered.filter(task => !task.values.completed);
   const completed = filtered.filter(task => task.values.completed);
   const selected = tasks.find(task => task.id === selectedId);
+  const menuTask = tasks.find(task => task.id === taskMenu?.id);
   const inlineDetails = !!selected && !overlayDetails;
   const fittedPanes = fitPaneLayout(paneLayout, bodyWidth, inlineDetails);
   const sidebarMax = Math.max(paneLimits.sidebar.min, Math.min(paneLimits.sidebar.max, bodyWidth - minimumTaskWidth - dividerWidth * (inlineDetails ? 2 : 1) - (inlineDetails ? fittedPanes.details : 0)));
@@ -189,8 +191,22 @@ export default function App() {
     }
   }
   function closeTaskMenu(restoreFocus = false) {
-    if (restoreFocus && taskMenu?.trigger?.isConnected) taskMenu.trigger.focus({ preventScroll: true });
+    const trigger = taskMenu && (taskButtons.current.get(taskMenu.id) ?? taskMenu.trigger);
+    if (restoreFocus) (trigger?.isConnected ? trigger : composerRef.current)?.focus({ preventScroll: true });
     setTaskMenu(null);
+  }
+  function taskMenuAction(action: TaskMenuAction) {
+    const task = menuTask;
+    closeTaskMenu(true);
+    if (!task) return;
+    switch (action) {
+      case 'complete': void dispatch({ type: 'task.update', id: task.id, patch: { completed: !task.values.completed } }); break;
+      case 'day': void dispatch({ type: 'task.update', id: task.id, patch: { myDay: task.values.myDay === today ? null : today } }); break;
+      case 'important': void dispatch({ type: 'task.update', id: task.id, patch: { important: !task.values.important } }); break;
+      case 'details': setSelectedId(task.id); setSuggestions(false); break;
+      case 'focus': if (!task.values.completed) openPomodoro(task); break;
+      case 'delete': void removeTask(task); break;
+    }
   }
   function taskRow(task: Task) {
     const v = task.values;
@@ -207,7 +223,7 @@ export default function App() {
         setTaskMenu({ id: task.id, x: bounds.left + 16, y: bounds.bottom, trigger: event.currentTarget.querySelector<HTMLElement>('.task-body') });
       }}>
       <button className={`task-check ${v.completed ? 'checked' : ''}`} aria-label={`${v.completed ? '取消完成' : '完成'} ${v.title}`} onClick={() => void dispatch({ type: 'task.update', id: task.id, patch: { completed: !v.completed } })}>{v.completed && <Check size={15} />}</button>
-      <button className="task-body" onClick={() => { setSelectedId(task.id); setSuggestions(false); }}><span className="task-title">{v.title}</span><span className="task-meta"><span>{list?.values.name ?? '任务'}</span>{v.myDay === today && view !== 'day' && <span><Sun size={12} />我的一天</span>}{v.dueDate && <span className={!v.completed && v.dueDate < today ? 'overdue' : ''}><CalendarDays size={12} />{prettyDate(v.dueDate)}{!v.completed && v.dueDate < today ? ' · 已逾期' : ''}</span>}{steps.length > 0 && <span><ListChecks size={13} />{steps.filter(step => step.values.completed).length}/{steps.length}</span>}{v.notes && <StickyNote size={12} />}{v.reminder && <Bell size={12} />}{v.repeat !== 'none' && <Repeat2 size={12} />}</span></button>
+      <button className="task-body" ref={button => { if (button) taskButtons.current.set(task.id, button); else taskButtons.current.delete(task.id); }} onClick={() => { setSelectedId(task.id); setSuggestions(false); }}><span className="task-title">{v.title}</span><span className="task-meta"><span>{list?.values.name ?? '任务'}</span>{v.myDay === today && view !== 'day' && <span><Sun size={12} />我的一天</span>}{v.dueDate && <span className={!v.completed && v.dueDate < today ? 'overdue' : ''}><CalendarDays size={12} />{prettyDate(v.dueDate)}{!v.completed && v.dueDate < today ? ' · 已逾期' : ''}</span>}{steps.length > 0 && <span><ListChecks size={13} />{steps.filter(step => step.values.completed).length}/{steps.length}</span>}{v.notes && <StickyNote size={12} />}{v.reminder && <Bell size={12} />}{v.repeat !== 'none' && <Repeat2 size={12} />}</span></button>
       <button className={`icon-button star-button ${v.important ? 'starred' : ''}`} aria-label={`${v.important ? '取消重要' : '标为重要'} ${v.title}`} onClick={() => void dispatch({ type: 'task.update', id: task.id, patch: { important: !v.important } })}><Star size={20} fill={v.important ? 'currentColor' : 'none'} /></button>
     </div>;
   }
@@ -250,10 +266,7 @@ export default function App() {
     {settings && <Settings state={state} api={api!} close={() => setSettings(false)} update={setState} toast={notify} />}
     {notesOpen && <NotesGallery state={state} api={api!} close={() => setNotesOpen(false)} update={setState} toast={notify} />}
     {listDialog && <Modal title={listDialog === 'new' ? '新建清单' : '编辑清单'} close={() => setListDialog(null)} busy={listBusy}><form className="list-form" onSubmit={saveList}><label>清单名称<input autoFocus required maxLength={500} placeholder="例如：工作计划、生活小事" value={listName} onChange={event => setListName(event.target.value)} /></label><label>清单颜色</label><div className="color-picker">{colors.map(color => <button key={color} type="button" className={`color-swatch bg-${color} ${listColor === color ? 'chosen' : ''}`} aria-label={colorNames[color]} aria-pressed={listColor === color} onClick={() => setListColor(color)}>{listColor === color && <Check size={17} />}</button>)}</div>{listDialog !== 'new' && <div className="delete-list-note"><p>删除清单后，其中的任务会移入“任务”。</p><button type="button" className="text-button danger-text" disabled={listBusy} onClick={async () => { setListBusy(true); const ok = await dispatch({ type: 'list.update', id: listDialog.id, patch: { deleted: true } }); setListBusy(false); if (ok) { setListDialog(null); navigate('inbox'); notify('清单已删除，任务已保留'); } }}><Trash2 size={15} />删除清单</button></div>}<div className="form-footer"><button type="button" className="button secondary" disabled={listBusy} onClick={() => setListDialog(null)}>取消</button><button className="button primary" disabled={!listName.trim() || listBusy}>{listBusy ? '正在保存…' : '保存清单'}</button></div></form></Modal>}
-    {taskMenu && <TaskContextMenu key={taskMenu.id} x={taskMenu.x} y={taskMenu.y} close={closeTaskMenu} remove={() => {
-      const task = tasks.find(task => task.id === taskMenu.id);
-      setTaskMenu(null); if (task) void removeTask(task);
-    }} />}
+    {taskMenu && menuTask && <TaskContextMenu key={taskMenu.id} x={taskMenu.x} y={taskMenu.y} task={menuTask} today={today} close={closeTaskMenu} action={taskMenuAction} />}
     {toast && <div className="toast" role="status"><Check size={17} /><span>{toast.text}</span>{toast.undo && <button onClick={toast.undo}>撤销</button>}<button aria-label="关闭提示" onClick={() => setToast(null)}><X size={15} /></button></div>}
   </div>;
 }

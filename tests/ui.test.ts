@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import { JSDOM } from 'jsdom';
 import { WorkspaceEngine } from '../src/shared/engine';
-import { nextZoom, type AppState, type DesktopAPI } from '../src/shared/model';
+import { localDate, nextZoom, type AppState, type DesktopAPI } from '../src/shared/model';
 import { emptyOutlookStatus } from '../src/shared/outlook';
 import { PomodoroTimer } from '../electron/pomodoro';
 import type { PomodoroSnapshot } from '../src/shared/pomodoro';
@@ -22,7 +22,7 @@ dom.window.matchMedia = (query: string) => ({
   addEventListener: (_event: string, listener: () => void) => mediaListeners.add(listener),
   removeEventListener: (_event: string, listener: () => void) => mediaListeners.delete(listener),
 }) as unknown as MediaQueryList;
-const { render, screen, cleanup, waitFor, fireEvent, act } = await import('@testing-library/react');
+const { render, screen, within, cleanup, waitFor, fireEvent, act } = await import('@testing-library/react');
 const { default: userEvent } = await import('@testing-library/user-event');
 const { default: App } = await import('../src/App');
 const { default: PomodoroWindow } = await import('../src/pomodoro/PomodoroWindow');
@@ -181,6 +181,8 @@ test('completed search results support the task menu without losing the query or
   assert.equal(screen.getByRole('textbox', { name: '备注' }), notes);
   assert.equal(notes.value, '继续编辑的备注');
   await user.keyboard('{Shift>}{F10}{/Shift}');
+  assert.equal(document.activeElement, screen.getByRole('menuitem', { name: '标记为未完成' }));
+  await user.keyboard('{End}');
   assert.equal(document.activeElement, screen.getByRole('menuitem', { name: '删除任务' }));
   await user.keyboard('{Enter}');
   await waitFor(() => assert.equal(screen.queryByText('示例：已完成任务', { exact: true }), null));
@@ -207,6 +209,124 @@ test('a failed context-menu deletion leaves the task intact and reports the stor
   assert.equal(engine.state.tasks[0].values.deleted, false);
   assert.equal(screen.queryByText('任务已删除', { exact: true }), null);
   assert.equal(screen.queryByRole('button', { name: '撤销' }), null);
+});
+
+function openTaskMenu(title: string) {
+  fireEvent.contextMenu(screen.getByText(title, { exact: true }), { clientX: 420, clientY: 250 });
+}
+
+test('task menus move tasks in and out of My Day and Important without deleting or opening them', async () => {
+  const { engine, user, add } = await mount();
+  await add('菜单操作目标'); await add('保留原样');
+  const target = engine.state.tasks.find(task => task.values.title === '菜单操作目标')!;
+  const other = structuredClone(engine.state.tasks.find(task => task.values.title === '保留原样'));
+  openTaskMenu('菜单操作目标');
+  await user.click(screen.getByRole('menuitem', { name: '从我的一天移除' }));
+  await waitFor(() => assert.equal(screen.queryByText('菜单操作目标', { exact: true }), null));
+  assert.equal(target.values.myDay, null); assert.equal(target.values.deleted, false);
+  assert.equal(screen.queryByLabelText('任务详情'), null);
+  await user.click(screen.getByRole('button', { name: /^全部任务/ }));
+  openTaskMenu('菜单操作目标');
+  assert.ok(screen.getByRole('menuitem', { name: '添加到我的一天' }));
+  await user.click(screen.getByRole('menuitem', { name: '标记为重要' }));
+  assert.equal(target.values.important, true);
+  await user.click(screen.getByRole('button', { name: /^重要/ }));
+  openTaskMenu('菜单操作目标');
+  await user.click(screen.getByRole('menuitem', { name: '取消重要标记' }));
+  await waitFor(() => assert.equal(screen.queryByText('菜单操作目标', { exact: true }), null));
+  assert.equal(target.values.important, false); assert.equal(target.values.deleted, false);
+  await user.click(screen.getByRole('button', { name: /^全部任务/ }));
+  openTaskMenu('菜单操作目标');
+  await user.click(screen.getByRole('menuitem', { name: '添加到我的一天' }));
+  assert.equal(target.values.myDay, localDate());
+  await user.click(screen.getByRole('button', { name: /^我的一天/ }));
+  assert.ok(screen.getByText('菜单操作目标', { exact: true }));
+  assert.equal(screen.queryByLabelText('任务详情'), null);
+  assert.deepEqual(engine.state.tasks.find(task => task.values.title === '保留原样'), other);
+});
+
+test('a past My Day date offers adding today and completion can be reversed from the completed view', async () => {
+  const { engine, api, user, add } = await mount(); await add('昨天安排的任务');
+  const target = engine.state.tasks[0];
+  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+  await act(async () => { await api.command({ type: 'task.update', id: target.id, patch: { myDay: localDate(yesterday), notes: '保留备注' } }); });
+  await user.click(screen.getByRole('button', { name: /^全部任务/ }));
+  openTaskMenu('昨天安排的任务');
+  assert.equal(screen.queryByRole('menuitem', { name: '从我的一天移除' }), null);
+  await user.click(screen.getByRole('menuitem', { name: '添加到我的一天' }));
+  openTaskMenu('昨天安排的任务');
+  await user.click(screen.getByRole('menuitem', { name: '标记为已完成' }));
+  assert.equal(target.values.completed, true);
+  await user.click(within(screen.getByRole('navigation', { name: '智能清单' })).getByRole('button', { name: /^已完成/ }));
+  openTaskMenu('昨天安排的任务');
+  assert.equal(screen.queryByRole('menuitem', { name: '专注此任务' }), null);
+  await user.click(screen.getByRole('menuitem', { name: '标记为未完成' }));
+  await waitFor(() => assert.equal(screen.queryByText('昨天安排的任务', { exact: true }), null));
+  assert.equal(target.values.completed, false); assert.equal(target.values.deleted, false);
+  assert.equal(target.values.notes, '保留备注'); assert.equal(target.values.myDay, localDate());
+});
+
+test('menu keyboard navigation and live labels preserve a search query and another task draft', async () => {
+  const { engine, api, user, add } = await mount();
+  await add('菜单：正在编辑'); await add('菜单：另一个任务');
+  await user.type(screen.getByRole('textbox', { name: '搜索任务' }), '菜单：');
+  await user.click(screen.getByText('菜单：正在编辑', { exact: true }));
+  const notes = screen.getByRole('textbox', { name: '备注' }) as HTMLTextAreaElement;
+  fireEvent.change(notes, { target: { value: '正在编辑的草稿' } });
+  const target = engine.state.tasks.find(task => task.values.title === '菜单：另一个任务')!;
+  openTaskMenu('菜单：另一个任务');
+  assert.equal(document.activeElement, screen.getByRole('menuitem', { name: '标记为已完成' }));
+  await user.keyboard('{ArrowDown}');
+  assert.equal(document.activeElement, screen.getByRole('menuitem', { name: '从我的一天移除' }));
+  await user.keyboard('{End}{ArrowDown}');
+  assert.equal(document.activeElement, screen.getByRole('menuitem', { name: '标记为已完成' }));
+  await user.keyboard('{Home}{ArrowUp}');
+  assert.equal(document.activeElement, screen.getByRole('menuitem', { name: '删除任务' }));
+  await act(async () => { await api.command({ type: 'task.update', id: target.id, patch: { myDay: null, important: true, completed: true } }); });
+  assert.ok(screen.getByRole('menuitem', { name: '标记为未完成' }));
+  assert.ok(screen.getByRole('menuitem', { name: '添加到我的一天' }));
+  assert.ok(screen.getByRole('menuitem', { name: '取消重要标记' }));
+  assert.equal(screen.queryByRole('menuitem', { name: '专注此任务' }), null);
+  await user.keyboard('{Escape}');
+  assert.equal(document.activeElement, screen.getByText('菜单：另一个任务', { exact: true }).closest('.task-body'));
+  assert.equal((screen.getByRole('textbox', { name: '搜索任务' }) as HTMLInputElement).value, '菜单：');
+  assert.equal(screen.getByRole('textbox', { name: '备注' }), notes);
+  assert.equal(notes.value, '正在编辑的草稿');
+  openTaskMenu('菜单：另一个任务');
+  await user.click(screen.getByRole('menuitem', { name: '取消重要标记' }));
+  assert.equal(target.values.important, false); assert.equal(notes.value, '正在编辑的草稿');
+});
+
+test('failed task-menu updates retain the task state and can be retried', async () => {
+  const { engine, api, user, add } = await mount(); await add('保存失败后重试');
+  const command = api.command;
+  api.command = async input => {
+    if (input.type === 'task.update' && input.patch.important) throw new Error('无法保存星标');
+    return command(input);
+  };
+  openTaskMenu('保存失败后重试');
+  await user.click(screen.getByRole('menuitem', { name: '标记为重要' }));
+  await screen.findByText('无法保存星标', { exact: true });
+  assert.equal(engine.state.tasks[0].values.important, false);
+  assert.ok(screen.getByText('保存失败后重试', { exact: true }));
+  api.command = command;
+  openTaskMenu('保存失败后重试');
+  await user.click(screen.getByRole('menuitem', { name: '标记为重要' }));
+  assert.equal(engine.state.tasks[0].values.important, true);
+});
+
+test('task menus open a focused timer or task details only when explicitly selected', async () => {
+  const { engine, user, add, timer } = await mount(); await add('从右键开始专注');
+  openTaskMenu('从右键开始专注');
+  await user.click(screen.getByRole('menuitem', { name: '专注此任务' }));
+  await screen.findByRole('main', { name: '番茄钟窗口' });
+  assert.equal(timer.snapshot().session.task?.id, engine.state.tasks[0].id);
+  assert.equal(screen.queryByLabelText('任务详情'), null);
+  await user.click(screen.getByRole('button', { name: '收起番茄钟' }));
+  openTaskMenu('从右键开始专注');
+  await user.click(screen.getByRole('menuitem', { name: '打开任务详情' }));
+  assert.equal((screen.getByRole('textbox', { name: '任务名称' }) as HTMLInputElement).value, '从右键开始专注');
+  assert.equal(engine.state.tasks[0].values.completed, false);
 });
 
 test('UI edits task notes, steps and deadline and keeps them on the same record', async () => {
