@@ -1,6 +1,6 @@
 # GTodo 开发指南
 
-本文件供参与本仓库开发的 agent 和维护者使用。以当前用户要求和实际代码为准；功能、存储或发布方式变化时同步更新本文和 `README.md`。
+本文件供参与本仓库开发的 agent 和维护者使用。以当前用户要求和实际代码为准；功能、存储或发布方式变化时同步更新本文、`README.md` 与 `help.md`。`README.md` 用于项目介绍和功能展示，详细操作与实现说明放在 `help.md`。
 
 ## 项目概况
 
@@ -31,6 +31,7 @@
 | `electron/outlook-*.ts`、`outlook-bridge.ps1` | 经典 Outlook 本地接口与单向同步 |
 | `src/styles.css`、`responsive.css`、`theme.css` | 扁平样式、响应式布局与主题 |
 | `scripts/`、`tests/` | 开发构建脚本、自动化与原生集成测试 |
+| `README.md`、`help.md`、`docs/images/` | 项目首页、完整使用帮助与真实功能截图；截图使用独立演示数据 |
 
 表中省略目录前缀的文件与同一单元格的首个文件位于同一目录。
 
@@ -129,7 +130,7 @@
 
 ## 版本与交付
 
-1. 更新 `package.json` 的 `version`、`package-lock.json` 根版本及 `packages[""].version`；同步 README 版本与下载路径，以及使用当前版本的测试夹具。
+1. 更新 `package.json` 的 `version`、`package-lock.json` 根版本及 `packages[""].version`；同步 README 与 help 的版本和下载路径，以及使用当前版本的测试夹具。
 2. 按改动完成检查；需要交付 EXE 时执行 `npm.cmd run dist`，不能只给旧安装包改名。
 3. 发布路径为 `release/GTodo-v<版本>-Windows-x64.zip` 与 `.exe`，未封装入口为 `release/win-unpacked/GTodo.exe`。ZIP 必须完整解压后运行，不能单独移动其中的 EXE。
 4. 核对打包后 `app.asar` 内的版本及构建文件，并检查 Windows `FileVersion` / `ProductVersion`；Outlook 桥接同时存在于 ASAR 和外部 resources 中，两处均需保持一致。
