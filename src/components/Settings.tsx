@@ -1,18 +1,21 @@
 import { useState } from 'react';
-import { FolderOpen, RefreshCw, Check, Download, Upload, AlertCircle, Minus, Plus, RotateCcw } from 'lucide-react';
+import { FolderOpen, RefreshCw, Check, Download, Upload, AlertCircle, Minus, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { zoomSteps, type AppState, type DesktopAPI, type ZoomAction } from '../shared/model';
 import Modal from './Modal';
 import OutlookCalendarSettings from './OutlookCalendarSettings';
+import RecycleBin from './RecycleBin';
 
 function cleanError(error: unknown) { return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''); }
 export default function Settings({ state, api, close, update, toast }: { state: AppState; api: DesktopAPI; close: () => void; update: (state: AppState) => void; toast: (text: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [trashOpen, setTrashOpen] = useState(false);
   async function execute(action: () => Promise<unknown>) {
     setBusy(true); setError('');
     try { await action(); } catch (error) { setError(cleanError(error)); } finally { setBusy(false); }
   }
   function zoom(action: ZoomAction) { void execute(async () => update(await api.setZoom(action))); }
+  if (trashOpen) return <RecycleBin api={api} close={() => setTrashOpen(false)} update={update} toast={toast} />;
   return <Modal title="设置" close={close} wide busy={busy}>
     <div className="settings-body">
       <h3 className="section-label">数据文件夹</h3>
@@ -26,6 +29,8 @@ export default function Settings({ state, api, close, update, toast }: { state: 
       </div>
       <p className="setting-description">选择网盘的本地目录，由网盘客户端同步。请将文件保留在本地。</p>
       <p className="setting-description">切换目录会合并数据，保留原文件。</p>
+      <div className="settings-divider" />
+      <div className="backup-row"><div><h3 className="section-label">回收站</h3><p>恢复已删除的记录，或永久清理文件。</p></div><button className="button secondary" disabled={busy} onClick={() => setTrashOpen(true)}><Trash2 size={16} />打开回收站</button></div>
       <div className="settings-divider" />
       <OutlookCalendarSettings state={state} api={api} busy={busy} execute={execute} update={update} />
       <div className="settings-divider" />

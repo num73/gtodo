@@ -212,6 +212,17 @@ export class DocumentFiles {
     const entry = documentEntry(workspace, target);
     return safePath(root, [...documentParts(entry), documentFileName(entry.format)]);
   }
+  async forgetPurged(root: string, workspace: Workspace) {
+    await this.initialize();
+    const prefixes = workspace.purged.filter(item => item.kind === 'task' || item.kind === 'note')
+      .map(item => this.key(root, documentParts({ kind: item.kind as 'task' | 'note', id: item.id })) + path.sep);
+    for (const key of Object.keys(this.baseline)) if (prefixes.some(prefix => key.startsWith(prefix))) { delete this.baseline[key]; this.pending.delete(key); }
+    const next = JSON.stringify(this.baseline);
+    if (next !== this.serialized) {
+      await atomicWrite(path.join(this.directory, 'document-state.json.bak'), next);
+      await atomicWrite(path.join(this.directory, 'document-state.json'), next); this.serialized = next;
+    }
+  }
   async readImage(root: string, workspace: Workspace, target: DocumentTarget, relative: string) {
     if (!isAssetPath(relative)) throw new Error('图片路径无效。');
     const entry = documentEntry(workspace, target); const id = entry.assets[relative];

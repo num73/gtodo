@@ -1,7 +1,27 @@
-import { emptyWorkspace, localDate, nextDate, type Clock, type Command, type RecordItem, type Workspace, type TaskValues } from './model';
+import { emptyWorkspace, localDate, nextDate, type Clock, type Command, type RecordItem, type Workspace, type TaskValues, type PurgedRecord } from './model';
 import { compareClock, linkedNoteForTask, linkedTaskForNote, synchronizeLinkedNotes } from './note-links';
 
 export { compareClock } from './note-links';
+function mergePurged(a: PurgedRecord[], b: PurgedRecord[]) {
+  const markers = new Map<string, PurgedRecord>();
+  for (const marker of [...a, ...b]) {
+    const key = `${marker.kind}:${marker.id}`; const prior = markers.get(key);
+    if (!prior || compareClock(marker.clock, prior.clock) > 0) markers.set(key, { kind: marker.kind, id: marker.id, clock: { tick: marker.clock.tick, device: marker.clock.device } });
+  }
+  return [...markers.values()].sort((x, y) => `${x.kind}:${x.id}`.localeCompare(`${y.kind}:${y.id}`, 'en'));
+}
+function removePurged(workspace: Workspace) {
+  const ids = new Set(workspace.purged.map(item => `${item.kind}:${item.id}`));
+  workspace.tasks = workspace.tasks.filter(item => !ids.has(`task:${item.id}`));
+  workspace.notes = workspace.notes.filter(item => !ids.has(`note:${item.id}`));
+  workspace.lists = workspace.lists.filter(item => !ids.has(`list:${item.id}`));
+  workspace.steps = workspace.steps.filter(item => !ids.has(`step:${item.id}`) && !ids.has(`task:${item.values.taskId}`));
+  for (const task of workspace.tasks) {
+    if (ids.has(`list:${task.values.listId}`)) task.values.listId = 'inbox';
+    if (task.values.noteLink && ids.has(`note:${task.values.noteLink.noteId}`)) task.values.noteLink = null;
+  }
+  return workspace;
+}
 function mergeRecords<T extends object>(a: RecordItem<T>[], b: RecordItem<T>[]): RecordItem<T>[] {
   const result = new Map(a.map(item => [item.id, structuredClone(item)]));
   for (const remote of b) {
@@ -17,13 +37,14 @@ function mergeRecords<T extends object>(a: RecordItem<T>[], b: RecordItem<T>[]):
   return [...result.values()].sort((x, y) => x.id.localeCompare(y.id, 'en'));
 }
 export function mergeWorkspaces(a: Workspace, b: Workspace): Workspace {
-  return synchronizeLinkedNotes({ schemaVersion: 1, lists: mergeRecords(a.lists, b.lists), tasks: mergeRecords(a.tasks, b.tasks), steps: mergeRecords(a.steps, b.steps), notes: mergeRecords(a.notes, b.notes) });
+  return synchronizeLinkedNotes(removePurged({ schemaVersion: 1, lists: mergeRecords(a.lists, b.lists), tasks: mergeRecords(a.tasks, b.tasks), steps: mergeRecords(a.steps, b.steps), notes: mergeRecords(a.notes, b.notes), purged: mergePurged(a.purged ?? [], b.purged ?? []) }));
 }
 export class WorkspaceEngine {
   state: Workspace;
   private tick = 0;
-  constructor(readonly deviceId: string, state = emptyWorkspace()) { this.state = synchronizeLinkedNotes(structuredClone(state)); this.observe(); }
+  constructor(readonly deviceId: string, state = emptyWorkspace()) { this.state = synchronizeLinkedNotes(removePurged({ ...structuredClone(state), purged: mergePurged(state.purged ?? [], []) })); this.observe(); }
   private observe() {
+    for (const marker of this.state.purged) this.tick = Math.max(this.tick, marker.clock.tick);
     for (const collection of [this.state.lists, this.state.tasks, this.state.steps, this.state.notes]) {
       for (const item of collection) for (const clock of Object.values(item.clocks) as Clock[]) this.tick = Math.max(this.tick, clock.tick);
     }
@@ -41,6 +62,33 @@ export class WorkspaceEngine {
     }
   }
   merge(remote: Workspace) { this.state = mergeWorkspaces(this.state, remote); this.observe(); }
+  private deletedRecord(target: PurgedRecord) {
+    const collection = target.kind === 'task' ? this.state.tasks : target.kind === 'note' ? this.state.notes : target.kind === 'list' ? this.state.lists : this.state.steps;
+    const item = collection.find(item => item.id === target.id);
+    if (!item?.values.deleted || compareClock(item.clocks.deleted, target.clock) !== 0) throw new Error('回收站内容已变化，请刷新后重试。');
+    return item;
+  }
+  restore(target: PurgedRecord) {
+    this.deletedRecord(target);
+    if (target.kind === 'task') {
+      const task = this.state.tasks.find(item => item.id === target.id)!;
+      const listId = this.state.lists.some(item => item.id === task.values.listId && !item.values.deleted) ? task.values.listId : 'inbox';
+      this.apply({ type: 'task.update', id: target.id, patch: { deleted: false, listId } });
+    } else if (target.kind === 'step') {
+      const step = this.state.steps.find(item => item.id === target.id)!;
+      if (!this.state.tasks.some(item => item.id === step.values.taskId && !item.values.deleted)) throw new Error('请先恢复此步骤所属的任务。');
+      this.apply({ type: 'step.update', id: target.id, patch: { deleted: false } });
+    } else if (target.kind === 'note') this.apply({ type: 'note.update', id: target.id, patch: { deleted: false } });
+    else this.apply({ type: 'list.update', id: target.id, patch: { deleted: false } });
+  }
+  purge(targets: PurgedRecord[]) {
+    for (const target of targets) this.deletedRecord(target);
+    const markers = targets.map(target => ({ kind: target.kind, id: target.id, clock: this.clock() }));
+    const taskIds = new Set(targets.filter(item => item.kind === 'task').map(item => item.id));
+    for (const step of this.state.steps) if (taskIds.has(step.values.taskId)) markers.push({ kind: 'step', id: step.id, clock: this.clock() });
+    this.state.purged = mergePurged(this.state.purged, markers);
+    removePurged(this.state);
+  }
   apply(command: Command) {
     const now = new Date().toISOString();
     switch (command.type) {
@@ -113,7 +161,7 @@ export class WorkspaceEngine {
     const current = this.state.tasks.find(item => item.id === id)!;
     const dueDate = nextDate(current.values.dueDate ?? localDate(), current.values.repeat);
     const nextId = `${current.values.seriesId}@${dueDate}`;
-    if (this.state.tasks.some(item => item.id === nextId)) return;
+    if (this.state.tasks.some(item => item.id === nextId) || this.state.purged.some(item => item.kind === 'task' && item.id === nextId)) return;
     const now = new Date().toISOString();
     this.state.tasks.push(this.record(nextId, { ...current.values, noteLink: null, dueDate, myDay: null, completed: false, completedAt: null, reminder: null, createdAt: now }));
     for (const step of this.state.steps.filter(item => item.values.taskId === id && !item.values.deleted)) {

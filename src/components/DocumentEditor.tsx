@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Code, Eye, FolderOpen, ImagePlus, Pencil } from 'lucide-react';
+import { Camera, Code, Eye, FolderOpen, ImagePlus, Pencil } from 'lucide-react';
 import { MAX_IMAGE_BYTES, type AssetMap, type DocumentFormat, type DocumentTarget } from '../shared/documents';
 export default function DocumentEditor({ target, label, value, format, assets, onChange, onFormatChange, onSave, disabled = false, sticky = false, toolbarTarget, collapsedToolbar = false, onToolbarAction }: {
   target: DocumentTarget; label: string; value: string; format: DocumentFormat; assets: AssetMap;
@@ -15,6 +15,10 @@ export default function DocumentEditor({ target, label, value, format, assets, o
   const [Preview, setPreviewComponent] = useState<typeof import('./MarkdownPreview').default | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [confirmCapture, setConfirmCapture] = useState(false);
+  const active = useRef(true);
+  const currentTarget = useRef(''); currentTarget.current = `${target.kind}:${target.id}`;
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const api = window.gtodo;
   async function execute(action: () => Promise<unknown>, closeToolbar = false) {
     setBusy(true); setError('');
@@ -45,11 +49,24 @@ export default function DocumentEditor({ target, label, value, format, assets, o
     }
     insert(inserted.join('\n'), before, selected); await onSave();
   }
+  function screenshot(convert = false) {
+    const identity = currentTarget.current;
+    const before = latest.current.value; const selected = { ...selection.current };
+    void execute(async () => {
+      if (convert) { await onFormatChange('markdown'); latest.current.format = 'markdown'; setConfirmCapture(false); }
+      await onSave();
+      const image = await api!.captureDocumentImage(target);
+      if (image && active.current && currentTarget.current === identity) { insert(imageMarkdown(image), before, selected); await onSave(); }
+    }, true);
+  }
   const toolbar = <div className="document-toolbar">
       <select aria-label={`${label}格式`} value={format} disabled={disabled || busy} onChange={event => {
         const mode = event.target.value as DocumentFormat;
         void execute(async () => { await onFormatChange(mode); if (mode === 'text') setPreview(false); });
       }}><option value="text">纯文本</option><option value="markdown">Markdown</option></select>
+      <button type="button" aria-label={`截图插入${label}`} title="框选截图" disabled={disabled || busy} onMouseDown={event => event.preventDefault()} onClick={() => {
+        if (latest.current.format === 'markdown') screenshot(); else setConfirmCapture(true);
+      }}><Camera size={16} /></button>
       {format === 'markdown' && <>
         <button type="button" aria-label={`${preview ? '编辑' : '预览'}${label}`} title={preview ? '编辑' : '预览'} aria-pressed={preview} disabled={busy} onClick={() => {
           remember();
@@ -72,6 +89,7 @@ export default function DocumentEditor({ target, label, value, format, assets, o
     </div>;
   return <div className={`document-editor ${sticky ? 'document-editor-sticky' : ''}`} data-format={format}>
     {collapsedToolbar ? (toolbarTarget ? createPortal(toolbar, toolbarTarget) : null) : toolbar}
+    {confirmCapture && <div className="document-capture-confirm" role="group" aria-label="截图格式确认"><span>插入截图需要 Markdown。</span><div><button type="button" disabled={busy} onClick={() => setConfirmCapture(false)}>取消</button><button type="button" disabled={disabled || busy} onClick={() => screenshot(true)}>转换并截图</button></div></div>}
     {preview && format === 'markdown' && Preview ? <Preview value={value} label={label} target={target} assets={assets} openLink={url => { void execute(() => api!.openLink(url)); }} /> : <textarea ref={editor} className="document-source" aria-label={label} placeholder={label === '备注' ? '添加备注' : '输入内容'} maxLength={100000} value={value} disabled={disabled} rows={6} spellCheck={false}
       onChange={event => { latest.current.value = event.target.value; onChange(event.target.value); remember(); }} onSelect={remember}
       onBlur={() => { remember(); void onSave().catch(() => {}); }}

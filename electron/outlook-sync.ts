@@ -29,7 +29,7 @@ export class OutlookSync {
   workspaceChanged() {
     if (this.stopped || !this.preferences.value.outlook.enabled) return;
     const workspace = this.workspace();
-    const signature = createHash('sha256').update(JSON.stringify([workspace.tasks, workspace.steps, workspace.lists])).digest('hex');
+    const signature = createHash('sha256').update(JSON.stringify([workspace.tasks, workspace.steps, workspace.lists, workspace.purged])).digest('hex');
     if (signature === this.workspaceSignature) return;
     this.workspaceSignature = signature; this.schedule();
   }

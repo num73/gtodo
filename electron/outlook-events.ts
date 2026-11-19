@@ -18,7 +18,7 @@ export function outlookEvents(workspace: Workspace): OutlookEvent[] {
     rows.push(`${step.values.completed ? '☑' : '☐'} ${step.values.title}`);
     steps.set(step.values.taskId, rows);
   }
-  return workspace.tasks.map(task => {
+  return [...workspace.tasks.map<OutlookEvent>(task => {
     const v = task.values;
     if (v.deleted || !v.dueDate) return { id: task.id, event: null };
     const year = Number(v.dueDate.slice(0, 4));
@@ -28,5 +28,5 @@ export function outlookEvents(workspace: Workspace): OutlookEvent[] {
       '', v.notes, '', ...(steps.get(task.id) ?? [])].join('\n').trimEnd();
     const event = { subject, body, date: v.dueDate, important: v.important };
     return { id: task.id, event: { ...event, revision: createHash('sha256').update(JSON.stringify(event)).digest('hex') } };
-  });
+  }), ...(workspace.purged ?? []).filter(item => item.kind === 'task').map(item => ({ id: item.id, event: null }))];
 }

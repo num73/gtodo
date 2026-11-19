@@ -10,8 +10,11 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
   return !Number.isNaN(parsed.valueOf()) && localDate(parsed) === value;
 }, '日期无效');
 const nullableDate = date.nullable();
-const clockSchema = z.object({ tick: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1000000), device: id });
+export const clockSchema = z.object({ tick: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1000000), device: id });
 export type Clock = z.infer<typeof clockSchema>;
+export const recordKindSchema = z.enum(['task', 'note', 'list', 'step']);
+export const purgedRecordSchema = z.object({ kind: recordKindSchema, id, clock: clockSchema });
+export type PurgedRecord = z.infer<typeof purgedRecordSchema>;
 const noteLinkSchema = z.object({ noteId: id, taskLife: clockSchema, noteLife: clockSchema, detached: z.object({ side: z.enum(['task', 'note']), clock: clockSchema }).optional() }).nullable();
 export const colors = ['purple', 'blue', 'green', 'rose', 'orange', 'slate'] as const;
 export const listValuesSchema = z.object({
@@ -54,6 +57,7 @@ export const workspaceSchema = z.object({
   tasks: z.array(recordSchema(taskValuesSchema)).max(100000),
   steps: z.array(recordSchema(stepValuesSchema)).max(200000),
   notes: z.array(recordSchema(noteValuesSchema)).max(10000).default([]),
+  purged: z.array(purgedRecordSchema).max(400000).default([]),
 }).superRefine((value, ctx) => {
   for (const key of ['lists', 'tasks', 'steps', 'notes'] as const) {
     if (new Set(value[key].map(item => item.id)).size !== value[key].length) {
@@ -61,9 +65,9 @@ export const workspaceSchema = z.object({
     }
   }
 });
-export interface Workspace { schemaVersion: 1; lists: TaskList[]; tasks: Task[]; steps: Step[]; notes: Note[] }
+export interface Workspace { schemaVersion: 1; lists: TaskList[]; tasks: Task[]; steps: Step[]; notes: Note[]; purged: PurgedRecord[] }
 export function parseWorkspace(value: unknown): Workspace { return workspaceSchema.parse(value) as Workspace; }
-export function emptyWorkspace(): Workspace { return { schemaVersion: 1, lists: [], tasks: [], steps: [], notes: [] }; }
+export function emptyWorkspace(): Workspace { return { schemaVersion: 1, lists: [], tasks: [], steps: [], notes: [], purged: [] }; }
 export function localDate(value = new Date()): string {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 }
@@ -120,12 +124,16 @@ export interface DesktopAPI {
   setZoom(action: ZoomAction): Promise<AppState>;
   exportBackup(): Promise<boolean>;
   importBackup(): Promise<AppState>;
+  getTrash(): Promise<import('./trash').TrashSnapshot>;
+  restoreTrash(target: import('./trash').TrashTarget): Promise<AppState>;
+  purgeTrash(targets: import('./trash').TrashTarget[]): Promise<import('./trash').TrashResult>;
   listOutlookCalendars(): Promise<OutlookCalendarOption[]>;
   configureOutlook(input: { enabled: boolean; calendarId?: string }): Promise<AppState>;
   syncOutlook(): Promise<AppState>;
   createNote(input?: CreateNoteInput): Promise<string>;
   createLinkedNote(taskId: string): Promise<string>;
   pickDocumentImage(target: DocumentTarget): Promise<{ path: string; name: string } | null>;
+  captureDocumentImage(target: DocumentTarget): Promise<{ path: string; name: string } | null>;
   insertDocumentImage(input: { target: DocumentTarget; bytes: Uint8Array; name: string }): Promise<{ path: string; name: string }>;
   showDocumentFile(target: DocumentTarget): Promise<void>;
   openLink(url: string): Promise<void>;

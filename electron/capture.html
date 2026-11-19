@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GTodo · 框选截图</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; user-select: none; cursor: crosshair; font: 14px "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+    #screen { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    #selection { position: fixed; border: 1px solid #4794ff; box-shadow: 0 0 0 20000px #0006; pointer-events: none; }
+    #hint { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: #fff; color: #293343; border: 1px solid #ccd2db; border-radius: 4px; padding: 8px 12px; display: flex; align-items: center; gap: 16px; max-width: calc(100% - 24px); cursor: default; z-index: 2; }
+    #cancel { border: 0; background: none; color: #53647a; padding: 4px; cursor: pointer; white-space: nowrap; font: inherit; }
+    #cancel:focus-visible { outline: 2px solid #3478e8; }
+    #dimensions { position: fixed; padding: 3px 6px; color: white; background: #293343; border-radius: 2px; font-size: 12px; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <img id="screen" alt="屏幕截图">
+  <div id="selection" hidden></div>
+  <div id="dimensions" hidden></div>
+  <div id="hint"><span id="message">拖动框选 · 松开插入 · Esc 取消</span><button id="cancel">取消</button></div>
+  <script src="capture-renderer.js"></script>
+</body>
+</html>

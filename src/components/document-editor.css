@@ -41,3 +41,6 @@
 .hljs-number, .hljs-built_in, .hljs-attr { color: #986801; }
 .hljs-title, .hljs-name, .hljs-function { color: #225ca1; }
 .hljs-variable, .hljs-deletion { color: #aa3743; }
+.document-capture-confirm { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid var(--line); font-size: 12px; background: #fff; }
+.document-capture-confirm > div { display: flex; gap: 10px; }
+.document-capture-confirm button { color: var(--accent); padding: 4px 0; }

@@ -2,25 +2,27 @@
   <img src="assets/icon.png" width="76" alt="GTodo 图标">
   <h1>GTodo</h1>
   <p><strong>待办、便签与专注，放在一起。</strong></p>
-  <p>Windows x64 · v0.1.1 · 本地保存</p>
+  <p>Windows x64 · v0.1.2 · 本地保存</p>
   <p>
     <a href="https://github.com/num73/gtodo/releases">下载 Windows 版</a> ·
     <a href="help.md">使用帮助</a> ·
+    <a href="CHANGELOG.md">更新日志</a> ·
     <a href="https://github.com/num73/gtodo/issues">反馈问题</a>
   </p>
 </div>
 
 GTodo 是一款简洁的 Windows 桌面待办应用。用清单安排今天，把灵感留在便签上，再开一轮番茄钟，专心完成眼前的一件事。
 
-![GTodo 主界面：我的一天、分类清单、重要任务和完成进度](docs/images/tasks.jpg)
+[![GTodo 主界面：我的一天、分类清单、重要任务和完成进度](docs/images/tasks.png)](docs/images/tasks.png)
 
 ## 日常需要的功能，都在手边
 
 | 功能 | 用法 |
 | --- | --- |
 | **任务与清单** | 我的一天、重要、计划和自定义清单；支持子步骤、日期、提醒与重复任务，右键即可安排今天、标星、完成或删除任务。 |
-| **Markdown 备注** | 纯文本与 Markdown 自由选择，支持图片、表格、代码高亮和预览，也能用外部编辑器修改。 |
+| **Markdown 备注** | 纯文本与 Markdown 自由选择，支持全屏框选截图、图片、表格、代码高亮和预览，也能用外部编辑器修改。 |
 | **桌面便签** | 12 种配色，可移动、调整大小和置顶；手动关联任务后，备注与便签双向更新。 |
+| **回收站** | 在设置中查看和恢复已删除的记录，确认后永久清理正文、附件与残留文件。 |
 | **独立番茄钟** | 专注、短休息和长休息；关联任务、查看今日统计，收起窗口后继续计时。 |
 | **本地数据与网盘目录** | 离线也能记录。选择 OneDrive、坚果云等客户端的本地同步文件夹，由网盘客户端同步数据。 |
 | **自适应界面** | 拖动分隔线调整布局，支持 60%～200% 缩放，窄窗口下自动切换展示方式。 |
@@ -29,11 +31,11 @@ GTodo 是一款简洁的 Windows 桌面待办应用。用清单安排今天，�
 
 ## 备注，也可以是一份 Markdown 文档
 
-在任务旁边写计划、贴图片、保存代码。需要排版时切换到 Markdown，点击预览即可查看效果。
+在任务旁边写计划、贴图片、保存代码。点击截图按钮，框选屏幕区域后即可插入备注或便签；需要查看排版时点击预览。
 
 正文保存为真实的 `.md` 或 `.txt` 文件，图片保存在文档旁的 `assets` 文件夹。用 VS Code、记事本等外部编辑后，GTodo 会自动读回修改。
 
-![任务备注的 Markdown 预览：标题、清单、代码高亮与关联便签入口](docs/images/markdown.jpg)
+[![任务备注的 Markdown 预览：标题、清单、代码高亮与关联便签入口](docs/images/markdown.png)](docs/images/markdown.png)
 
 ## 把便签和番茄钟留在桌面
 
@@ -41,7 +43,7 @@ GTodo 是一款简洁的 Windows 桌面待办应用。用清单安排今天，�
 
 | 桌面便签 | 独立番茄钟 |
 | :---: | :---: |
-| <img src="docs/images/sticky-note.jpg" width="360" alt="蓝色桌面便签与标题栏内的 12 色、Markdown 编辑菜单"> | <img src="docs/images/pomodoro.jpg" width="320" alt="独立番茄钟窗口：关联任务、专注计时与今日统计"> |
+| <a href="docs/images/sticky-note.png"><img src="docs/images/sticky-note.png" width="360" alt="蓝色桌面便签与标题栏内的 12 色、Markdown 编辑菜单"></a> | <a href="docs/images/pomodoro.png"><img src="docs/images/pomodoro.png" width="320" alt="独立番茄钟窗口：关联任务、专注计时与今日统计"></a> |
 | 颜色和编辑工具收在“…”菜单里，把更多空间留给正文。 | 为当前任务留出一段专注时间，随时暂停或继续。 |
 
 任务与便签需要**手动确认关联**，之后修改任一方都会更新另一方。删除任务或便签，只解除关联，另一方内容仍保留。
@@ -62,4 +64,4 @@ GTodo 是一款简洁的 Windows 桌面待办应用。用清单安排今天，�
 - 问题与建议：[GitHub Issues](https://github.com/num73/gtodo/issues)
 - 开发与构建：[开发说明](help.md#开发与构建)
 
-GTodo 是独立项目，不隶属于 Microsoft。页面截图使用演示数据。
+GTodo 是独立项目，不隶属于 Microsoft。页面截图使用演示数据，点击图片可查看原分辨率的无损 PNG。

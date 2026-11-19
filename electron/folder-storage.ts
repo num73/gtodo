@@ -6,6 +6,8 @@ import { atomicWrite, DataStore } from './storage';
 import { PreferencesStore } from './preferences';
 import { DocumentFiles, documentEntry } from './document-files';
 import type { DocumentTarget } from '../src/shared/documents';
+import { trashRecords, type TrashTarget, type TrashSnapshot, type TrashResult } from '../src/shared/trash';
+import { cleanTrashFiles, inspectTrash } from './trash-files';
 
 export const MAX_DATA_BYTES = 24 * 1024 * 1024;
 // Include conflict copies produced by desktop sync clients, but never temp/backup files.
@@ -109,6 +111,45 @@ export class FolderStorage {
         ? { type: 'task.update', id: target.id, patch: { notesAssets: assets } }
         : { type: 'note.update', id: target.id, patch: { assets } }));
       await this.reconcile(); return relative;
+    });
+  }
+  getTrash(): Promise<TrashSnapshot> {
+    return this.enqueue(async () => {
+      await this.reconcile();
+      try {
+        if (this.status.error) throw new Error(this.status.error);
+        return await inspectTrash(this.directory, this.local.directory, this.local.engine.state, await this.local.backupWorkspace());
+      } catch (error) {
+        return { items: trashRecords(this.local.engine.state), residualBytes: 0, residualFiles: 0, error: error instanceof Error ? error.message : '无法统计文件占用。' };
+      }
+    });
+  }
+  restoreTrash(target: TrashTarget) {
+    return this.update(engine => engine.restore(target));
+  }
+  purgeTrash(targets: TrashTarget[]): Promise<TrashResult> {
+    return this.enqueue(async () => {
+      await this.reconcile();
+      if (this.status.error) throw new Error(this.status.error);
+      if (targets.length) await this.local.update(engine => engine.purge(targets));
+      // Persist markers and materialize surviving linked documents before unlink.
+      await this.reconcile();
+      if (this.status.error) return { freedBytes: 0, error: `永久删除已记录，文件尚未清理：${this.status.error}` };
+      try {
+        const result = await cleanTrashFiles(this.directory, this.local.directory, this.local.engine.state, await this.local.backupWorkspace());
+        await this.documents.forgetPurged(this.directory, this.local.engine.state);
+        return result;
+      }
+      catch (error) { return { freedBytes: 0, error: error instanceof Error ? error.message : '文件尚未清理，请重试。' }; }
+      finally { this.changed(); }
+    });
+  }
+  importBackup(workspace: Workspace, attachments: unknown) {
+    return this.enqueue(async () => {
+      await this.reconcile();
+      await this.documents.importAttachments(attachments);
+      await this.local.update(engine => engine.merge(workspace));
+      await this.reconcile();
     });
   }
   async flush() { await this.queue; await this.local.flush(); }

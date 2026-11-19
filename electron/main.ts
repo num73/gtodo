@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, screen, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, screen, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import { readFile, stat } from 'node:fs/promises';
 import { z } from 'zod';
@@ -19,6 +19,8 @@ import { PomodoroTimer } from './pomodoro';
 import { PomodoroWindow } from './pomodoro-window';
 import { paneLayoutSchema } from '../src/shared/layout';
 import { formatCountdown, phaseLabels, pomodoroCommandSchema, remainingTime } from '../src/shared/pomodoro';
+import { trashTargetSchema, trashTargetsSchema } from '../src/shared/trash';
+import { ScreenCapture } from './screen-capture';
 
 app.setName('GTodo');
 app.setAppUserModelId('app.gtodo.desktop');
@@ -40,6 +42,7 @@ let initialFolderRead: Promise<void> = Promise.resolve();
 let startupWindows: Promise<void> = Promise.resolve();
 let folderReady = false;
 let notes: NoteWindows;
+let screenCapture: ScreenCapture | undefined;
 let outlook: OutlookSync | undefined;
 let pomodoro: PomodoroTimer | undefined;
 let pomodoroWindow: PomodoroWindow | undefined;
@@ -234,6 +237,8 @@ async function initialize() {
   preferences = new PreferencesStore(app.getPath('userData')); await preferences.initialize();
   startupMark('preferencesMs');
   folders = new FolderStorage(store, preferences, () => { changed(); if (folderReady) outlook?.workspaceChanged(); });
+  screenCapture = new ScreenCapture({ native: { BrowserWindow, desktopCapturer, screen, nativeImage },
+    html: path.join(__dirname, 'capture.html'), preload: path.join(__dirname, 'capture-preload.cjs') });
   outlook = new OutlookSync(preferences, () => store.engine.state,
     createOutlookBridge(app.isPackaged ? path.join(process.resourcesPath, 'outlook-bridge.ps1') : path.join(app.getAppPath(), 'dist-electron/outlook-bridge.ps1')), changed);
   notes = new NoteWindows({ preferences, workspace: () => store.engine.state, publish: changed, quitting: () => quitting,
@@ -323,6 +328,23 @@ async function initialize() {
     const relative = await folders.addImage(target, await readFile(file));
     return { path: relative, name: path.basename(file) };
   }, true);
+  handle('gtodo:document-image-capture', async (value, event) => {
+    const target = documentTargetSchema.parse(value); checkDocumentOwner(event, target);
+    if (documentEntry(store.engine.state, target).format !== 'markdown') throw new Error('请先启用 Markdown。');
+    await startupWindows;
+    if (quitting || preparingToQuit) throw new Error('应用正在退出。');
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (!owner || owner.isDestroyed()) throw new Error('编辑窗口已关闭。');
+    const bytes = await screenCapture!.capture(owner);
+    if (!bytes) return null;
+    checkDocumentOwner(event, target);
+    const relative = await folders.addImage(target, bytes);
+    return { path: relative, name: `截图 ${new Date().toLocaleString('zh-CN')}` };
+  }, true);
+  ipcMain.handle('gtodo:capture-preview', event => screenCapture!.preview(event));
+  ipcMain.handle('gtodo:capture-ready', event => screenCapture!.ready(event));
+  ipcMain.handle('gtodo:capture-select', (event, value) => screenCapture!.select(event, value));
+  ipcMain.handle('gtodo:capture-cancel', event => screenCapture!.cancelFrom(event));
   handle('gtodo:document-image', async (value, event) => {
     const input = z.object({ target: documentTargetSchema, name: z.string().max(200), bytes: z.custom<Uint8Array>(value => value instanceof Uint8Array && value.byteLength <= MAX_IMAGE_BYTES) }).parse(value);
     checkDocumentOwner(event, input.target);
@@ -362,6 +384,18 @@ async function initialize() {
   });
   handle('gtodo:open-folder', async () => { const error = await shell.openPath(folders.directory); if (error) throw new Error('无法打开数据文件夹，请检查路径是否存在。'); });
   handle('gtodo:refresh-folder', async () => { await folders.refresh(); return state(); });
+  handle('gtodo:trash', async () => { await initialFolderRead; return folders.getTrash(); });
+  handle('gtodo:trash-restore', async value => { await folders.restoreTrash(trashTargetSchema.parse(value)); return state(); });
+  handle('gtodo:trash-purge', async value => {
+    const targets = trashTargetsSchema.parse(value);
+    await startupWindows;
+    try {
+      if (!(await Promise.all([notes.flushAll(), mainRendererReady ? notes.flushWindow(window) : Promise.resolve(true)])).every(Boolean)) throw new Error('有备注或便签尚未保存，已取消清理。');
+      const result = await folders.purgeTrash(targets);
+      for (const item of store.engine.state.purged) if (item.kind === 'note' && preferences.value.noteWindows[item.id]?.open) await notes.hide(item.id, false);
+      return result;
+    } finally { notes.resumeInteractions(); }
+  });
   handle('gtodo:outlook-list', () => outlook!.list());
   handle('gtodo:outlook-configure', async value => {
     const input = z.object({ enabled: z.boolean(), calendarId: z.string().regex(/^[a-f\d]{64}$/).optional() }).parse(value);
@@ -387,8 +421,7 @@ async function initialize() {
     let attachments;
     try { const data = JSON.parse(await readFile(result.filePaths[0], 'utf8')); imported = parseWorkspace(data); attachments = data.attachments; }
     catch { throw new Error('这不是有效的 GTodo 备份，现有数据未改变。'); }
-    await folders.documents.importAttachments(attachments);
-    await folders.update(engine => engine.merge(imported)); return state();
+    await folders.importBackup(imported, attachments); return state();
   });
   ipcMain.on('gtodo:window', (event, action) => {
     trusted(event);
@@ -447,6 +480,7 @@ app.on('window-all-closed', () => { if (!tray) app.quit(); });
 let flushedOnQuit = false;
 let preparingToQuit = false;
 app.on('before-quit', event => {
+  screenCapture?.cancel();
   if (!flushedOnQuit && store && preferences && folders) {
     event.preventDefault();
     if (preparingToQuit) return;

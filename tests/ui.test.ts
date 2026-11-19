@@ -8,6 +8,7 @@ import { emptyOutlookStatus } from '../src/shared/outlook';
 import { PomodoroTimer } from '../electron/pomodoro';
 import type { PomodoroSnapshot } from '../src/shared/pomodoro';
 import { defaultPaneLayout, type PaneLayout } from '../src/shared/layout';
+import { trashRecords } from '../src/shared/trash';
 
 // Renderer behavior is tested in an isolated DOM, without controlling the user's preview window.
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
@@ -42,7 +43,7 @@ async function mount() {
     const task = engine.state.tasks.find(task => task.id === id && !task.values.completed && !task.values.deleted);
     return task ? { id: task.id, title: task.values.title } : null;
   }, changed: value => { for (const listener of timerListeners) listener(value); } });
-  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.1.1', paneLayout: { ...paneLayout }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook });
+  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.1.2', paneLayout: { ...paneLayout }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook });
   const publish = () => { for (const listener of stateListeners) listener(snapshot()); };
   const api: DesktopAPI = {
     getPomodoro: async () => timer.snapshot(), pomodoroCommand: command => timer.command(command),
@@ -64,13 +65,16 @@ async function mount() {
     chooseDataFolder: async () => { dataPath = 'D:\\OneDrive\\GTodo'; return snapshot(); }, openDataFolder: async () => {},
     setZoom: async action => { zoom = nextZoom(zoom, action); return snapshot(); },
     exportBackup: async () => true, importBackup: async () => snapshot(),
+    getTrash: async () => ({ items: trashRecords(engine.state), residualBytes: 0, residualFiles: 0, error: null }),
+    restoreTrash: async target => { engine.restore(target); publish(); return snapshot(); },
+    purgeTrash: async targets => { engine.purge(targets); publish(); return { freedBytes: 512, error: null }; },
     listOutlookCalendars: async () => [{ id: 'a'.repeat(64), name: '测试账户 / 日历' }],
     configureOutlook: async input => { outlook = { ...outlook, enabled: input.enabled, phase: input.enabled ? 'idle' : 'off', targetName: '测试账户 / 日历 / GTodo' }; return snapshot(); },
     syncOutlook: async () => { outlook.lastSyncedAt = new Date().toISOString(); return snapshot(); },
     windowControl: () => {},
     createNote: async input => { engine.apply({ type: 'note.add', ...input }); return engine.state.notes.at(-1)!.id; },
     createLinkedNote: async id => { engine.apply({ type: 'task.link-note', id }); publish(); return engine.state.tasks.find(task => task.id === id)!.values.noteLink!.noteId; },
-    pickDocumentImage: async () => null, insertDocumentImage: async () => ({ path: `assets/${'a'.repeat(64)}.png`, name: '图片.png' }), showDocumentFile: async () => {}, openLink: async () => {},
+    pickDocumentImage: async () => null, captureDocumentImage: async () => null, insertDocumentImage: async () => ({ path: `assets/${'a'.repeat(64)}.png`, name: '图片.png' }), showDocumentFile: async () => {}, openLink: async () => {},
     noteWindow: async () => {}, deleteNote: async id => { engine.apply({ type: 'note.update', id, patch: { deleted: true } }); publish(); return snapshot(); },
     showMain: async () => {}, onNoteFlush: () => () => {}, noteFlushed: async () => {}, quit: () => {},
   };
@@ -85,6 +89,47 @@ async function mount() {
   };
   return { engine, api, user, add, timer };
 }
+
+test('settings recycle bin restores records and requires confirmation before permanent deletion', async () => {
+  const { api, engine, user, add } = await mount(); await add('回收站中的任务');
+  await act(async () => { await api.command({ type: 'task.update', id: engine.state.tasks[0].id, patch: { deleted: true, notes: '回收站备注预览' } }); });
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.click(screen.getByRole('button', { name: '打开回收站' }));
+  await screen.findByRole('article', { name: '任务：回收站中的任务' });
+  assert.ok(screen.getByText('回收站备注预览'));
+  await user.click(screen.getByRole('button', { name: '永久删除' }));
+  assert.ok(screen.getByRole('alertdialog', { name: '永久删除确认' }));
+  assert.equal(engine.state.tasks.length, 1);
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  assert.equal(engine.state.tasks.length, 1);
+  await user.click(screen.getByRole('button', { name: '恢复' }));
+  await screen.findByText('回收站为空'); assert.equal(engine.state.tasks[0].values.deleted, false);
+  await act(async () => { await api.command({ type: 'task.update', id: engine.state.tasks[0].id, patch: { deleted: true } }); });
+  await user.click(screen.getByRole('button', { name: '刷新回收站' }));
+  await screen.findByRole('article', { name: '任务：回收站中的任务' });
+  await user.click(screen.getByRole('button', { name: '清空回收站' }));
+  await user.click(screen.getByRole('button', { name: '确认永久删除' }));
+  await screen.findByText('回收站为空'); assert.equal(engine.state.tasks.length, 0);
+  assert.equal(engine.state.purged.length, 1);
+});
+
+test('recycle bin keeps failed operations visible and allows retrying residual file cleanup', async () => {
+  const { api, engine, user, add } = await mount(); await add('不能误删的任务');
+  await act(async () => { await api.command({ type: 'task.update', id: engine.state.tasks[0].id, patch: { deleted: true } }); });
+  let residual = true; let calls = 0;
+  api.getTrash = async () => ({ items: trashRecords(engine.state), residualBytes: residual ? 2048 : 0, residualFiles: residual ? 1 : 0, error: null });
+  api.purgeTrash = async targets => { calls++; if (calls === 1) throw new Error('文件夹不可用'); assert.equal(targets.length, 0); residual = false; return { freedBytes: 2048, error: null }; };
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.click(screen.getByRole('button', { name: '打开回收站' }));
+  await screen.findByRole('button', { name: '清理残留文件' });
+  await user.click(screen.getByRole('button', { name: '清理残留文件' }));
+  await user.click(screen.getByRole('button', { name: '确认永久删除' }));
+  await screen.findByRole('alert'); assert.match(screen.getByRole('alert').textContent!, /文件夹不可用/);
+  assert.equal(engine.state.tasks.length, 1);
+  await user.click(screen.getByRole('button', { name: '确认永久删除' }));
+  await waitFor(() => assert.equal(screen.queryByRole('button', { name: '清理残留文件' }), null));
+  assert.equal(engine.state.tasks.length, 1); assert.equal(calls, 2);
+});
 test('Pomodoro starts from a task, persists across closing its panel and prevents task completion', async () => {
   const { user, add, engine, timer } = await mount(); await add('专注写作');
   await user.click(screen.getByText('专注写作', { exact: true }));
@@ -528,6 +573,65 @@ test('image insertion uses a relative Markdown asset and preview opens only the 
   api.showDocumentFile = async target => { assert.equal(target.id, engine.state.tasks[0].id); revealed = true; };
   await user.click(screen.getByRole('button', { name: '打开备注文件位置' }));
   assert.equal(revealed, true);
+});
+
+test('screenshots insert at the saved task-note selection and persist a document-scoped image', async () => {
+  const { engine, api, user, add } = await mount(); await add('截图任务');
+  await user.click(screen.getByText('截图任务', { exact: true }));
+  await user.selectOptions(screen.getByRole('combobox', { name: '备注格式' }), 'markdown');
+  const area = screen.getByRole('textbox', { name: '备注' }) as HTMLTextAreaElement;
+  fireEvent.change(area, { target: { value: '前文\n后文' } }); area.setSelectionRange(3, 3); fireEvent.select(area);
+  const id = `${'c'.repeat(64)}.png`; const relative = `assets/${id}`;
+  api.captureDocumentImage = async target => {
+    assert.equal(target.kind, 'task'); assert.equal(engine.state.tasks[0].values.notes, '前文\n后文');
+    engine.apply({ type: 'task.update', id: target.id, patch: { notesAssets: { [relative]: id } } });
+    return { path: relative, name: '截图示例' };
+  };
+  await user.click(screen.getByRole('button', { name: '截图插入备注' }));
+  await waitFor(() => assert.equal(engine.state.tasks[0].values.notes, `前文\n![截图示例](${relative})\n后文`));
+  await user.click(screen.getByRole('button', { name: '预览备注' }));
+  assert.match((await screen.findByRole('img', { name: '截图示例' })).getAttribute('src')!, /gtodo:\/\/app\/media\/task\//);
+});
+
+test('plain-text screenshot conversion is explicit and cancellation or errors preserve the text', async () => {
+  const { engine, api, user, add } = await mount(); await add('保留截图前的文字');
+  await user.click(screen.getByText('保留截图前的文字', { exact: true }));
+  fireEvent.change(screen.getByRole('textbox', { name: '备注' }), { target: { value: '保留草稿' } });
+  let called = 0;
+  api.captureDocumentImage = async () => { called++; throw new Error('截图未能启动'); };
+  await user.click(screen.getByRole('button', { name: '截图插入备注' }));
+  const prompt = screen.getByRole('group', { name: '截图格式确认' });
+  await user.click(within(prompt).getByRole('button', { name: '取消' }));
+  assert.equal(called, 0); assert.equal(engine.state.tasks[0].values.notesFormat, 'text');
+  await user.click(screen.getByRole('button', { name: '截图插入备注' }));
+  await user.click(screen.getByRole('button', { name: '转换并截图' }));
+  await screen.findByText('截图未能启动'); assert.equal(engine.state.tasks[0].values.notes, '保留草稿');
+  assert.equal(engine.state.tasks[0].values.notesFormat, 'markdown'); assert.equal(called, 1);
+  api.captureDocumentImage = async () => null;
+  await user.click(screen.getByRole('button', { name: '截图插入备注' }));
+  await waitFor(() => assert.equal((screen.getByRole('button', { name: '截图插入备注' }) as HTMLButtonElement).disabled, false));
+  assert.equal(engine.state.tasks[0].values.notes, '保留草稿'); assert.deepEqual(engine.state.tasks[0].values.notesAssets, {});
+});
+
+test('sticky-note screenshots stay in the collapsed toolbar and update an explicitly linked task', async () => {
+  const { engine, api, user } = await mount(); cleanup();
+  engine.apply({ type: 'task.add', title: '关联截图', listId: 'inbox' }); const task = engine.state.tasks[0];
+  engine.apply({ type: 'task.update', id: task.id, patch: { notes: '便签正文', notesFormat: 'markdown' } });
+  engine.apply({ type: 'task.link-note', id: task.id }); const note = engine.state.notes[0];
+  const id = `${'d'.repeat(64)}.png`; const relative = `assets/${id}`;
+  api.captureDocumentImage = async target => {
+    assert.deepEqual(target, { kind: 'note', id: note.id });
+    engine.apply({ type: 'note.update', id: note.id, patch: { assets: { [relative]: id } } });
+    return { path: relative, name: '便签截图' };
+  };
+  const { NoteEditor } = await import('../src/notes/StickyNoteWindow');
+  render(React.createElement(NoteEditor, { note, state: await api.getState(), api }));
+  assert.equal(screen.queryByRole('button', { name: '截图插入便签内容' }), null);
+  await user.click(screen.getByRole('button', { name: '便签编辑选项' }));
+  await user.click(screen.getByRole('button', { name: '截图插入便签内容' }));
+  await waitFor(() => assert.match(note.values.content, /!\[便签截图\]/));
+  assert.equal(task.values.notes, note.values.content); assert.deepEqual(task.values.notesAssets, note.values.assets);
+  assert.equal(screen.queryByRole('button', { name: '截图插入便签内容' }), null);
 });
 
 test('sticky notes choose Markdown independently and insert a real fenced code block', async () => {

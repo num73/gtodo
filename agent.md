@@ -1,12 +1,12 @@
 # GTodo 开发指南
 
-本文件供参与本仓库开发的 agent 和维护者使用。以当前用户要求和实际代码为准；功能、存储或发布方式变化时同步更新本文、`README.md` 与 `help.md`。`README.md` 用于项目介绍和功能展示，详细操作与实现说明放在 `help.md`。
+本文件供参与本仓库开发的 agent 和维护者使用。以当前用户要求和实际代码为准；功能、存储或发布方式变化时同步更新本文、`README.md` 与 `help.md`，发布时维护 `CHANGELOG.md`。`README.md` 用于项目介绍和功能展示，详细操作与实现说明放在 `help.md`。
 
 ## 项目概况
 
 - GTodo 是参考 Microsoft To Do 操作方式的 Windows 桌面待办应用，包含任务、桌面便签、Markdown 备注、番茄钟和 Outlook 日历同步。
 - 技术栈：Electron、React、TypeScript、Vite、esbuild、Zod；具体依赖版本以 `package.json` 和 `package-lock.json` 为准。
-- 当前应用版本为 `0.1.1`。运行时通过 `app.getVersion()` 获取版本，不另设界面版本来源。
+- 当前应用版本为 `0.1.2`。运行时通过 `app.getVersion()` 获取版本，不另设界面版本来源。
 - 开发环境：Windows x64，Node.js 22.12+ 或 24 LTS，PowerShell。使用 `npm.cmd` / `npx.cmd`，无需修改系统执行策略。
 - 默认用中文交流，界面文案保持简短。先检查工作区状态，保留已有修改，避免顺手重构无关功能。
 
@@ -25,13 +25,16 @@
 | `electron/main.ts`、`preload.ts` | 生命周期、IPC、应用协议、托盘、提醒与退出保存 |
 | `electron/storage.ts`、`folder-storage.ts` | 本机缓存、原子写入、数据文件夹切换与合并 |
 | `electron/document-files.ts` | 正文文件、图片、外部编辑回读与冲突保留 |
+| `src/shared/trash.ts`、`src/components/RecycleBin.tsx`、`electron/trash-files.ts` | 回收站记录、确认与恢复界面、受限目录文件清理 |
 | `electron/linked-note-commands.ts` | 关联记录删除前的跨窗口保存协调 |
 | `electron/note-windows.ts`、`pomodoro-window.ts` | 独立窗口、恢复、置顶、收起与加载重试 |
+| `electron/screen-capture.ts`、`capture-preload.ts`、`capture-renderer.ts`、`capture.html`、`src/shared/screen-capture.ts` | 屏幕框选、独立受限窗口、像素坐标转换与截图 IPC |
 | `electron/preferences.ts`、`pomodoro.ts` | 本机设置与番茄钟状态 |
 | `electron/outlook-*.ts`、`outlook-bridge.ps1` | 经典 Outlook 本地接口与单向同步 |
 | `src/styles.css`、`responsive.css`、`theme.css` | 扁平样式、响应式布局与主题 |
 | `scripts/`、`tests/` | 开发构建脚本、自动化与原生集成测试 |
 | `README.md`、`help.md`、`docs/images/` | 项目首页、完整使用帮助与真实功能截图；截图使用独立演示数据 |
+| `CHANGELOG.md` | 按版本记录相对上次发布的用户可见改动与升级说明 |
 
 表中省略目录前缀的文件与同一单元格的首个文件位于同一目录。
 
@@ -60,11 +63,14 @@
 - 删除便签：解除关联，保留任务备注。删除任务：解除关联，为保留的便签生成独立正文文件和图片。
 - 撤销删除后双方保持独立，不自动恢复关联；重新关联必须显式创建。保留生命周期时钟，防止旧同步数据或再次删除误恢复关系。
 - 双方都删除后从当前列表移除；仍沿用删除标记、撤销和备份机制，不将删除描述为安全擦除。
+- 设置内的回收站支持搜索、恢复、单项永久删除、清空和残留文件重试。永久删除必须有明确的界面确认，并校验记录仍处于相同删除生命周期；恢复不自动重建关联。清单删除不级联删除任务，任务永久删除会清理自己的步骤。
 
 ### 本地文件与外部服务
 
 - 网盘同步由用户安装的网盘客户端处理。GTodo 只选择、读写本地数据文件夹，不恢复 OneDrive/WebDAV 登录、OAuth 或密码管理。
 - 正文默认纯文本 `.txt`，显式启用 Markdown 后使用 `.md`；图片使用文档旁的 `assets` 和相对路径。
+- 备注工具栏和便签“…”菜单提供截图入口。纯文本需明确确认转换为 Markdown；框选完成后在原光标位置插入 PNG 并保存，关联双方复用图片。取消不插入图片，已确认的格式转换保留。
+- 截图期间隐藏本应用原先可见且未最小化的窗口，结束、取消、加载失败、显示器变化及退出时恢复；全屏原图只留内存，选区才经现有图片接口保存。每次单个显示器框选，不使用剪贴板中转。
 - 支持 UTF-8 外部编辑后自动回读，先确认文件稳定，保留同时修改产生的冲突副本；后台刷新不能覆盖未保存的输入。
 - Markdown 预览不执行原始 HTML 或脚本；保留本地路径、图片类型与大小校验。
 - 日历是 GTodo 到经典 Outlook 的单向同步，默认关闭。当前接口不能直接接入 Windows 任务栏日期弹窗或仅安装的新版 Outlook。
@@ -78,6 +84,9 @@
 - JSON 同时保存属性、正文缓存、图片映射和修改时钟，用于恢复与合并。不要把正文文件当作唯一数据源，也不要把外部删除文件当作删除任务。
 - 当前 `schemaVersion` 为 `1`。增加字段时提供旧数据默认值和必要的时钟默认值；格式变化必须兼容已有数据与备份，不能靠清空数据完成迁移。
 - 保持字段级修改时钟和确定性合并。删除标记用于阻止离线旧副本复活记录，不随意清理。
+- `Workspace.purged` 默认为空，记录永久删除的类型、ID、时钟；不得存入标题、正文或 UI 摘要。合并时永久删除优先，过滤相应记录及任务的迟到步骤；保留标识防止旧快照/备份复活，重复任务也不能重新生成已清理的同 ID 实例。Outlook 仍需为这些任务生成明确的移除指令。
+- 回收站清理串行进入 FolderStorage，先保存窗口草稿、提交并同步永久删除标识、落盘保留方文档，再清理文件。当前目录不可用时禁止开始永久删除；失败后保留标识并允许重试。DataStore 自动备份同时压缩被永久删除的记录，但保留其他数据的恢复能力。
+- 只清理当前目录内被永久删除记录的文档目录，以及本机未引用图片；图片引用检查包含正常记录、回收站和自动备份。扫描完整计划并在每次删除前重新验证路径，拒绝符号链接/目录联接；只逐个 unlink 和删除空目录。保留手动导出、旧目录、其他设备快照和云端版本历史，不声称安全擦除。多设备使用时均需更新到支持永久删除标识的构建。
 - 文件写入保持串行、原子替换和备份。共享目录不可用时仍保存本机修改；损坏或未下载完整的文件不能覆盖有效缓存。
 - 保存期间的新输入应继续留在草稿中；收起、退出和关联删除前等待保存。保存失败时保持内容可编辑、可重试。
 - 切换数据目录时合并并保留原目录文件。不要复制整个用户数据目录到另一台电脑，以免复制设备身份。
@@ -96,6 +105,7 @@
 | `npm.cmd start` | 启动已构建的应用；先执行 build |
 | `npm.cmd test` | 执行 `tests/*.test.ts` |
 | `npm.cmd run test:notes` | 独立 Electron 窗口测试；先构建 |
+| `npm.cmd run test:capture` | 截图边界测试：系统默认显示设置及 100% / 150% / 200% 进程缩放；先构建 |
 | `npm.cmd run test:outlook` | 经典 Outlook 本地 PST 集成测试；先构建 |
 | `npm.cmd run bench:startup -- . 500 3` | 独立合成数据启动基准；500 张便签、3 次运行；先构建 |
 | `npm.cmd run pack` | 构建 Windows 未封装目录 |
@@ -108,11 +118,15 @@
 - 按改动选择检查。纯文档修改检查内容、路径和差异即可；版本修改检查版本一致性与发布产物，不新增仅复述实现的测试。
 - 修改共享模型、合并、存储或关联规则时，运行相关测试与构建；跨模块行为变化再运行完整 `npm.cmd test`。
 - 关联功能重点检查 `tests/note-links.test.ts`、`tests/linked-note-commands.test.ts`、`tests/documents.test.ts` 和 `tests/ui.test.ts`：双方编辑、外部回读、删除任一方、保存失败、撤销和离线合并。
+- 回收站改动运行 `tests/trash.test.ts` 及完整测试，重点覆盖文件真实释放、存活方及图片保护、删除标识的合并/重启、陈旧确认、部分清理失败和路径逃逸防护。清理测试只用 `.qa` 合成数据。
 - 改动窗口生命周期、置顶或加载协议时，构建后运行 `npm.cmd run test:notes`；它在 `.qa` 独立目录测试真实窗口和加载失败恢复。
+- 截图改动运行 `tests/screen-capture.test.ts` 与相关 UI 测试，检查选区边界、不同像素尺寸、多屏映射、来源拒绝、取消及错误恢复、纯文本确认和关联同步。实际桌面截图验证只使用合成测试背景，不保存个人屏幕内容。
+- 截图窗口边界或全屏方式改动后运行 `npm.cmd run test:capture`，用真实窗口和合成屏幕验证外框、内容区与显示器完整 `bounds` 一致，并检查底边裁剪和恢复；不能只断言 `isFullScreen()`。测试覆盖系统默认显示设置与显式进程缩放，后者用于边界计算回归，不等同于更改 Windows 系统 DPI；保留实际桌面验证。
 - 手动验证使用未打包 Electron：将当前进程的 `GTODO_DATA_DIR` 设为 `.qa` 下的唯一绝对路径，`GTODO_QA=1`，清除该进程的 `ELECTRON_RUN_AS_NODE`，再运行 `npm.cmd start`。测试后恢复原环境变量。
 - `GTODO_DATA_DIR` 仅在未打包模式生效；不能靠它隔离便携 EXE。不要使用个人任务目录执行删除或故障注入测试。
 - `test:outlook` 需要已配置的经典 Outlook，会临时挂载 `.qa` 下的独立 PST 并在结束时解除挂载。不要改成使用个人日历做增删测试。
 - UI 修改检查主窗口宽窄布局、缩放、便签小窗口和编辑保存。只关闭本次测试启动的进程；优先正常退出并等待保存。
+- README 功能截图使用高分辨率渲染后直接导出的无损 PNG，保留原始像素，不转 JPEG、不缩小图片文件；页面通过布局控制展示宽度，并链接原图。
 - `.qa`、`dist`、`dist-electron`、`release`、`node_modules` 和日志是本地产物，不加入源代码提交。
 
 ## 已知实现注意点
@@ -121,6 +135,8 @@
 - 无边框标题栏的按钮和编辑区保持 `-webkit-app-region: no-drag`，空白拖动区使用 `drag`。
 - 当前便签和番茄钟置顶使用 `setAlwaysOnTop(true, 'pop-up-menu')`，取消使用 `normal`；改动时验证窗口仍可见、可收起和再次打开。
 - 保留便签加载的有界重试和失败窗口清理。`gtodo://app/index.html?note=...` 加载失败不能删除已保存的便签或阻止整个应用启动。
+- 截图使用独立沙箱分区、固定 100% 缩放与最小 preload，仅接受当前截图窗口的主 frame 和指定本地 HTML；主应用不能调用截图窗口专用 IPC。主进程按原图实际像素裁剪并限制 10 MB，启动与选择均有超时。构建和 ASAR 须包含 `capture.html`、`capture-renderer.js`、`capture-preload.cjs`。
+- Windows 截图窗口需 `thickFrame: false`，显示前重新应用对应显示器的完整 `bounds` 并提升窗口层级。默认系统边框可能使声明为全屏的窗口仍受工作区限制，造成截图缩放和双任务栏；不要替换为 `workArea` 或仅依赖 `fullscreen: true`。
 - 当前 electron-builder 配置 `portable.unpackDirName: true` 用于独立临时解压目录，防止重复启动清理另一实例资源。升级依赖时核对实际行为。
 - 单文件便携 EXE 每次都会解压运行环境；优先提供完整解压一次的 ZIP 版，不以固定共享临时目录换取速度。
 - 主窗口先读本机缓存，文件夹首次合并在窗口创建后运行；编辑仍进入 FolderStorage 串行队列。日历启用、手动同步及后台同步要等待首次读取；退出等待启动窗口恢复完成后再统一保存草稿。
@@ -131,6 +147,7 @@
 ## 版本与交付
 
 1. 更新 `package.json` 的 `version`、`package-lock.json` 根版本及 `packages[""].version`；同步 README 与 help 的版本和下载路径，以及使用当前版本的测试夹具。
+   更新 `CHANGELOG.md`，对照上一个发布标签核对改动范围，避免重复记录已发布功能。
 2. 按改动完成检查；需要交付 EXE 时执行 `npm.cmd run dist`，不能只给旧安装包改名。
 3. 发布路径为 `release/GTodo-v<版本>-Windows-x64.zip` 与 `.exe`，未封装入口为 `release/win-unpacked/GTodo.exe`。ZIP 必须完整解压后运行，不能单独移动其中的 EXE。
 4. 核对打包后 `app.asar` 内的版本及构建文件，并检查 Windows `FileVersion` / `ProductVersion`；Outlook 桥接同时存在于 ASAR 和外部 resources 中，两处均需保持一致。

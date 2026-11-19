@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, stat, open, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { WorkspaceEngine } from '../src/shared/engine';
-import { parseWorkspace, type Workspace } from '../src/shared/model';
+import { emptyWorkspace, parseWorkspace, type Workspace } from '../src/shared/model';
 
 export async function atomicWrite(file: string, content: string | Uint8Array) {
   await mkdir(path.dirname(file), { recursive: true });
@@ -42,12 +42,19 @@ export class DataStore {
   }
   private serialize(engine: WorkspaceEngine) { return JSON.stringify({ deviceId: engine.deviceId, workspace: engine.state }); }
   async flush() { await this.queue; }
+  async backupWorkspace(): Promise<Workspace> {
+    if (!await exists(`${this.file}.bak`)) return emptyWorkspace();
+    const saved = savedSchema.parse(JSON.parse(await readFile(`${this.file}.bak`, 'utf8')));
+    return parseWorkspace(saved.workspace);
+  }
   update(change: (engine: WorkspaceEngine) => void): Promise<Workspace> {
     const operation = this.queue.then(async () => {
       const next = new WorkspaceEngine(this.engine.deviceId, this.engine.state);
       change(next);
       parseWorkspace(next.state);
-      await atomicWrite(`${this.file}.bak`, this.serialize(this.engine));
+      const backup = new WorkspaceEngine(this.engine.deviceId, this.engine.state);
+      backup.merge({ ...emptyWorkspace(), purged: next.state.purged });
+      await atomicWrite(`${this.file}.bak`, this.serialize(backup));
       await atomicWrite(this.file, this.serialize(next));
       this.engine = next;
       return structuredClone(next.state);
