@@ -36,7 +36,7 @@ async function mount() {
     const task = engine.state.tasks.find(task => task.id === id && !task.values.completed && !task.values.deleted);
     return task ? { id: task.id, title: task.values.title } : null;
   }, changed: value => onPomodoro?.(value) });
-  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '1.5.0', noteWindows: {}, outlook });
+  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.1.0', noteWindows: {}, outlook });
   const api: DesktopAPI = {
     getPomodoro: async () => timer.snapshot(), pomodoroCommand: command => timer.command(command),
     onPomodoro: callback => { onPomodoro = callback; return () => { onPomodoro = undefined; }; }, onOpenPomodoro: () => () => {},

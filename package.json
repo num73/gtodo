@@ -1,7 +1,7 @@
 {
   "name": "gtodo",
   "productName": "GTodo",
-  "version": "1.5.1",
+  "version": "0.1.0",
   "private": true,
   "description": "支持番茄钟、桌面便签、日历同步与自适应缩放的桌面待办应用",
   "author": "GTodo",
@@ -62,7 +62,7 @@
       "signExecutable": false
     },
     "portable": {
-      "artifactName": "GTodo-${version}-Windows-x64.exe"
+      "artifactName": "GTodo-v${version}-Windows-x64.exe"
     }
   }
 }
