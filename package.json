@@ -13,6 +13,7 @@
     "build": "tsc --noEmit && vite build && node scripts/build-electron.mjs",
     "start": "electron .",
     "test": "tsx --test tests/*.test.ts",
+    "test:notes": "node scripts/test-notes-native.mjs",
     "test:outlook": "tsx scripts/test-outlook-native.ts",
     "pack": "npm run build && electron-builder --win --dir",
     "dist": "npm run build && electron-builder --win portable --x64"
@@ -62,7 +63,8 @@
       "signExecutable": false
     },
     "portable": {
-      "artifactName": "GTodo-v${version}-Windows-x64.exe"
+      "artifactName": "GTodo-v${version}-Windows-x64.exe",
+      "unpackDirName": true
     }
   }
 }

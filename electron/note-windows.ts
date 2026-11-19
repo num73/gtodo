@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, screen, type WebContents } from 'electron';
+import type { BrowserWindow, WebContents } from 'electron';
 import type { AppState, Workspace } from '../src/shared/model';
 import type { PreferencesStore } from './preferences';
 
@@ -6,11 +6,20 @@ export class NoteWindows {
   private windows = new Map<string, BrowserWindow>();
   private boundsTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private flushRequests = new Map<string, { sender: WebContents; finish: (success: boolean) => void }>();
-  private hiding = new Map<string, Promise<void>>();
+  private operations = new Map<string, Promise<unknown>>();
   constructor(private options: {
     preferences: PreferencesStore; workspace: () => Workspace; publish: () => void;
     quitting: () => boolean; preload: string; icon: string; url: string;
+    native: Pick<typeof import('electron'), 'BrowserWindow' | 'dialog' | 'screen'>;
+    report: (event: string, details: Record<string, unknown>) => void;
   }) {}
+  private enqueue<T>(id: string, action: () => Promise<T>): Promise<T> {
+    const operation = (this.operations.get(id) ?? Promise.resolve()).then(action);
+    const settled = operation.catch(() => {});
+    this.operations.set(id, settled);
+    void settled.then(() => { if (this.operations.get(id) === settled) this.operations.delete(id); });
+    return operation;
+  }
   owner(sender: WebContents) {
     return [...this.windows].find(([, window]) => !window.isDestroyed() && window.webContents === sender)?.[0];
   }
@@ -31,17 +40,20 @@ export class NoteWindows {
       void this.saveBounds(id, window).catch(() => {});
     }, 350));
   }
-  async open(id: string, focus = true) {
+  open(id: string, focus = true) { return this.enqueue(id, () => this.openSaved(id, focus)); }
+  private async openSaved(id: string, focus: boolean) {
+    if (this.options.quitting()) return;
     const note = this.getNote(id);
     if (!note || note.values.deleted) throw new Error('这张便签已不存在，请重新选择。');
     const prior = this.options.preferences.value.noteWindows[id] ?? { open: false, pinned: false };
     // Window visibility and coordinates belong to this computer, not the shared folder.
-    await this.options.preferences.update(value => { value.noteWindows[id] = { ...prior, open: true }; });
+    await this.options.preferences.update(value => { value.noteWindows[id] = { ...value.noteWindows[id] ?? prior, open: true }; });
     let window = this.windows.get(id);
     if (window && !window.isDestroyed()) {
       if (focus) { window.show(); window.focus(); } else window.showInactive();
       this.options.publish(); return;
     }
+    const { BrowserWindow, screen, dialog } = this.options.native;
     const area = prior.bounds ? screen.getDisplayMatching(prior.bounds).workArea : screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(prior.bounds?.width ?? 350, area.width);
     const height = Math.min(prior.bounds?.height ?? 390, area.height);
@@ -60,7 +72,7 @@ export class NoteWindows {
     current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     current.webContents.on('will-navigate', event => event.preventDefault());
     current.webContents.setZoomMode('isolated');
-    current.webContents.on('did-finish-load', () => current.webContents.setZoomFactor(1));
+    current.webContents.on('did-finish-load', () => { if (!current.isDestroyed()) current.webContents.setZoomFactor(1); });
     current.on('page-title-updated', event => event.preventDefault());
     current.on('resize', () => this.remember(id, current));
     current.on('move', () => this.remember(id, current));
@@ -69,19 +81,43 @@ export class NoteWindows {
       event.preventDefault();
       void this.hide(id).catch(error => dialog.showErrorBox('便签尚未关闭', error instanceof Error ? error.message : String(error)));
     });
-    current.on('closed', () => { clearTimeout(this.boundsTimers.get(id)); this.boundsTimers.delete(id); this.windows.delete(id); });
-    current.once('ready-to-show', () => {
-      if (this.options.preferences.value.noteWindows[id]?.open) {
-        if (focus) current.show(); else current.showInactive();
-      }
+    current.on('closed', () => {
+      if (this.windows.get(id) !== current) return;
+      clearTimeout(this.boundsTimers.get(id)); this.boundsTimers.delete(id); this.windows.delete(id);
     });
-    await current.loadURL(`${this.options.url}?note=${encodeURIComponent(id)}`);
+    const url = new URL(this.options.url); url.searchParams.set('note', id);
+    try {
+      // A failed navigation may still emit ready-to-show. Keep the window hidden
+      // until loading succeeds, and retry in the same window without adding a note.
+      for (let attempt = 1; ; attempt++) {
+        try { await current.loadURL(url.href); break; }
+        catch (error) {
+          this.options.report('note-load-failed', { id, attempt, error: String(error) });
+          if (attempt >= 2 || current.isDestroyed() || this.options.quitting()) throw error;
+          await new Promise(resolve => setTimeout(resolve, 150));
+        }
+      }
+      if (!current.isDestroyed() && !this.options.quitting()) {
+        if (focus) { current.show(); current.focus(); } else current.showInactive();
+      }
+    } catch (error) {
+      if (!current.isDestroyed()) current.destroy();
+      await this.options.preferences.update(value => {
+        value.noteWindows[id] = { ...value.noteWindows[id] ?? prior, open: false };
+      }).catch(failure => this.options.report('note-window-preferences-failed', { id, error: String(failure) }));
+      this.options.publish();
+      throw new Error('便签已保存，但窗口暂时无法打开。请在“桌面便签”中重新打开；若仍失败，请退出并重启 GTodo。', { cause: error });
+    }
     this.options.publish();
   }
   async restore() {
+    let failed = 0;
     for (const [id, value] of Object.entries(this.options.preferences.value.noteWindows)) {
-      if (value.open && this.getNote(id) && !this.getNote(id)!.values.deleted) await this.open(id, false);
+      if (value.open && this.getNote(id) && !this.getNote(id)!.values.deleted) {
+        try { await this.open(id, false); } catch { failed++; }
+      }
     }
+    return failed;
   }
   async pin(id: string, pinned: boolean) {
     if (!this.getNote(id)) throw new Error('便签不存在。');
@@ -122,15 +158,13 @@ export class NoteWindows {
     } finally { if (window && !window.isDestroyed()) window.setEnabled(true); }
   }
   hide(id: string, flush = true): Promise<void> {
-    const running = this.hiding.get(id); if (running) return running;
     const hideSaved = async () => {
       const window = this.windows.get(id);
       if (window && !window.isDestroyed()) await this.saveBounds(id, window);
       await this.options.preferences.update(value => { value.noteWindows[id] = { ...value.noteWindows[id] ?? { pinned: false }, open: false }; });
       window?.destroy(); this.options.publish();
     };
-    const operation = (flush ? this.withSaved(id, hideSaved) : hideSaved()).finally(() => this.hiding.delete(id));
-    this.hiding.set(id, operation); return operation;
+    return this.enqueue(id, () => flush ? this.withSaved(id, hideSaved) : hideSaved());
   }
   async saveAllBounds() {
     for (const timer of this.boundsTimers.values()) clearTimeout(timer);

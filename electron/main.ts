@@ -7,6 +7,7 @@ import { atomicWrite, DataStore } from './storage';
 import { FolderStorage, MAX_DATA_BYTES } from './folder-storage';
 import { PreferencesStore, type Preferences } from './preferences';
 import { NoteWindows } from './note-windows';
+import { Diagnostics } from './diagnostics';
 import { createOutlookBridge } from './outlook-bridge';
 import { OutlookSync } from './outlook-sync';
 import { emptyOutlookStatus } from '../src/shared/outlook';
@@ -16,6 +17,7 @@ import { formatCountdown, phaseLabels, pomodoroCommandSchema, remainingTime } fr
 app.setName('GTodo');
 app.setAppUserModelId('app.gtodo.desktop');
 if (process.env.GTODO_DATA_DIR && !app.isPackaged) app.setPath('userData', path.resolve(process.env.GTODO_DATA_DIR));
+const diagnostics = new Diagnostics(app.getPath('userData'));
 protocol.registerSchemesAsPrivileged([{ scheme: 'gtodo', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
@@ -185,7 +187,10 @@ async function initialize() {
     if (url.hostname !== 'app' || relative.startsWith('..') || path.isAbsolute(relative)) return new Response('Forbidden', { status: 403 });
     const types: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
     try { return new Response(await readFile(file), { headers: { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream' } }); }
-    catch { return new Response('Not found', { status: 404 }); }
+    catch (error) {
+      diagnostics.report('app-resource-failed', { resource: url.pathname, error: String(error) });
+      return new Response('Not found', { status: 404 });
+    }
   });
   // Preserve the 1.0 local workspace and device identity; never load old cloud credentials.
   store = new DataStore(app.getPath('userData')); await store.initialize();
@@ -194,6 +199,7 @@ async function initialize() {
   outlook = new OutlookSync(preferences, () => store.engine.state,
     createOutlookBridge(app.isPackaged ? path.join(process.resourcesPath, 'outlook-bridge.ps1') : path.join(app.getAppPath(), 'dist-electron/outlook-bridge.ps1')), changed);
   notes = new NoteWindows({ preferences, workspace: () => store.engine.state, publish: changed, quitting: () => quitting,
+    native: { BrowserWindow, screen, dialog }, report: diagnostics.report,
     preload: path.join(__dirname, 'preload.cjs'), icon: path.join(app.getAppPath(), 'assets/icon.png'), url: devURL ? `${devURL}/` : 'gtodo://app/index.html' });
   pomodoro = new PomodoroTimer({ directory: app.getPath('userData'), task: id => {
     const task = store.engine.state.tasks.find(task => task.id === id && !task.values.deleted && !task.values.completed);
@@ -280,7 +286,12 @@ async function initialize() {
     if (action === 'close') window?.close();
   });
   ipcMain.on('gtodo:quit', event => { trusted(event); app.quit(); });
-  createWindow(); createTray(); await notes.restore(); outlook.start();
+  createWindow(); createTray();
+  if (await notes.restore()) {
+    store.notice = [store.notice, '部分便签未能打开，内容已保留，可在“桌面便签”中重新打开。'].filter(Boolean).join('\n');
+    changed();
+  }
+  outlook.start();
   void pomodoro.tick().catch(() => {});
   let ticking = false;
   pomodoroTick = setInterval(() => {
@@ -323,6 +334,7 @@ app.on('before-quit', event => {
       ]);
       await preferences.flush();
       await pomodoro?.pause();
+      await diagnostics.flush();
       if (folderTimer) clearInterval(folderTimer);
       if (pomodoroTick) clearInterval(pomodoroTick);
       outlook?.stop();
