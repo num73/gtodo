@@ -8,6 +8,7 @@ import { DocumentFiles, documentEntry } from './document-files';
 import type { DocumentTarget } from '../src/shared/documents';
 import { trashRecords, type TrashTarget, type TrashSnapshot, type TrashResult } from '../src/shared/trash';
 import { cleanTrashFiles, inspectTrash } from './trash-files';
+import type { BoardImageInput } from '../src/shared/board';
 
 export const MAX_DATA_BYTES = 24 * 1024 * 1024;
 // Include conflict copies produced by desktop sync clients, but never temp/backup files.
@@ -113,6 +114,16 @@ export class FolderStorage {
       await this.reconcile(); return relative;
     });
   }
+  addBoardImage(input: BoardImageInput, bytes: Uint8Array, name: string) {
+    return this.enqueue(async () => {
+      await this.reconcile();
+      const assetId = await this.documents.cacheImage(bytes);
+      await this.local.update(engine => engine.apply(input.destination === 'background'
+        ? { type: 'board.update', patch: { backgroundId: assetId } }
+        : { type: 'board.card.add', content: { kind: 'image', assetId, name: name.slice(0, 200) }, layout: input.layout }));
+      await this.reconcile();
+    });
+  }
   getTrash(): Promise<TrashSnapshot> {
     return this.enqueue(async () => {
       await this.reconcile();
@@ -150,6 +161,13 @@ export class FolderStorage {
       await this.documents.importAttachments(attachments);
       await this.local.update(engine => engine.merge(workspace));
       await this.reconcile();
+    });
+  }
+  exportBackup() {
+    return this.enqueue(async () => {
+      await this.reconcile();
+      // Keep the snapshot and its image reads in the same queue as edits/purge.
+      return this.documents.backup(this.local.engine.state);
     });
   }
   async flush() { await this.queue; await this.local.flush(); }

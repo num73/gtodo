@@ -215,6 +215,37 @@ for (const removed of ['task', 'note'] as const) test(`deleting the linked ${rem
   assert.equal(f.folder.status.error, null);
 });
 
+test('reimporting a verified backup repairs corrupted cached images', async t => {
+  const f = await device(t); const bytes = await png();
+  await f.folder.addBoardImage({ destination: 'background' }, bytes, '背景.png');
+  const backup = JSON.parse(await f.documents.backup(f.store.engine.state));
+  const id = f.store.engine.state.boards[0].values.backgroundId!;
+  await writeFile(path.join(f.root, 'media', id), 'corrupted cache');
+  await assert.rejects(f.documents.readBoardImage(f.folder.directory, f.store.engine.state, id));
+  await f.folder.importBackup(parseWorkspace(backup), backup.attachments);
+  assert.deepEqual((await f.documents.readBoardImage(f.folder.directory, f.store.engine.state, id)).bytes, bytes);
+  assert.equal(f.folder.status.error, null);
+});
+
+test('export reads a coherent snapshot and finishes image reads before queued cleanup', async t => {
+  const f = await device(t); const bytes = await png();
+  await f.folder.addBoardImage({ destination: 'card' }, bytes, '导出图片.png');
+  const cardId = f.store.engine.state.boardCards[0].id;
+  const backup = f.documents.backup.bind(f.documents);
+  let started!: () => void, release!: () => void;
+  const waiting = new Promise<void>(resolve => { started = resolve; });
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  f.documents.backup = async workspace => { started(); await pending; return backup(workspace); };
+  const exporting = f.folder.exportBackup();
+  await waiting;
+  const deleting = f.folder.update(engine => engine.apply({ type: 'board.card.update', id: cardId, patch: { deleted: true } }));
+  release();
+  const saved = JSON.parse(await exporting); await deleting;
+  assert.equal(saved.boardCards[0].values.deleted, false);
+  assert.equal(Object.keys(saved.attachments).length, 1);
+  assert.equal(f.store.engine.state.boardCards[0].values.deleted, true);
+});
+
 test('main-window drafts flush the last keystroke and survive Strict Mode re-registration', async () => {
   let saved = ''; const draft = new FieldDraft({ content: '' }, async patch => { saved = patch.content!; return { content: saved }; }, 60000);
   const first = registerMainDraft(draft); first(); const second = registerMainDraft(draft);

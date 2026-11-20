@@ -9,6 +9,7 @@ import { PomodoroTimer } from '../electron/pomodoro';
 import type { PomodoroSnapshot } from '../src/shared/pomodoro';
 import { defaultPaneLayout, type PaneLayout } from '../src/shared/layout';
 import { trashRecords } from '../src/shared/trash';
+import { flushMainDrafts } from '../src/notes/draft';
 
 // Renderer behavior is tested in an isolated DOM, without controlling the user's preview window.
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
@@ -43,7 +44,7 @@ async function mount() {
     const task = engine.state.tasks.find(task => task.id === id && !task.values.completed && !task.values.deleted);
     return task ? { id: task.id, title: task.values.title } : null;
   }, changed: value => { for (const listener of timerListeners) listener(value); } });
-  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.1.2', paneLayout: { ...paneLayout }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook });
+  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.2.1', paneLayout: { ...paneLayout }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook });
   const publish = () => { for (const listener of stateListeners) listener(snapshot()); };
   const api: DesktopAPI = {
     getPomodoro: async () => timer.snapshot(), pomodoroCommand: command => timer.command(command),
@@ -74,6 +75,7 @@ async function mount() {
     windowControl: () => {},
     createNote: async input => { engine.apply({ type: 'note.add', ...input }); return engine.state.notes.at(-1)!.id; },
     createLinkedNote: async id => { engine.apply({ type: 'task.link-note', id }); publish(); return engine.state.tasks.find(task => task.id === id)!.values.noteLink!.noteId; },
+    pickBoardImage: async () => null, insertBoardImage: async () => snapshot(),
     pickDocumentImage: async () => null, captureDocumentImage: async () => null, insertDocumentImage: async () => ({ path: `assets/${'a'.repeat(64)}.png`, name: '图片.png' }), showDocumentFile: async () => {}, openLink: async () => {},
     noteWindow: async () => {}, deleteNote: async id => { engine.apply({ type: 'note.update', id, patch: { deleted: true } }); publish(); return snapshot(); },
     showMain: async () => {}, onNoteFlush: () => () => {}, noteFlushed: async () => {}, quit: () => {},
@@ -89,6 +91,159 @@ async function mount() {
   };
   return { engine, api, user, add, timer };
 }
+
+test('board resize at the canvas edge keeps the origin fixed and clamps the size', async () => {
+  const { api, engine, user } = await mount();
+  await act(async () => { await api.command({ type: 'board.card.add', content: { kind: 'text', text: '边缘贴纸' }, layout: { x: 5800, y: 5800, width: 200, height: 200 } }); });
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  const handle = screen.getByRole('button', { name: '调整文字贴纸大小：边缘贴纸' });
+  fireEvent.keyDown(handle, { key: 'ArrowRight', shiftKey: true });
+  fireEvent.keyDown(handle, { key: 'ArrowDown', shiftKey: true });
+  await act(() => flushMainDrafts());
+  assert.deepEqual(engine.state.boardCards[0].values.layout, { x: 5800, y: 5800, width: 200, height: 200 });
+});
+
+test('retrying a missing background preview does not submit the settings form', async () => {
+  const { api, engine, user } = await mount();
+  api.pickBoardImage = async () => ({ state: await api.getState(), assetId: `${'c'.repeat(64)}.png` });
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  await user.click(screen.getByRole('button', { name: '背景' }));
+  await user.click(screen.getByRole('button', { name: '选择背景图片' }));
+  fireEvent.error(await screen.findByRole('img', { name: '背景预览' }));
+  await user.click(screen.getByRole('button', { name: '重试加载' }));
+  assert.ok(screen.getByRole('dialog', { name: '看板背景' }));
+  assert.equal(engine.state.boards.length, 0);
+});
+
+test('leaving the board waits for every image in an ongoing import', async () => {
+  const { api, engine, user } = await mount();
+  api.insertBoardImage = async input => api.command({ type: 'board.card.add', content: { kind: 'image', assetId: `${'d'.repeat(64)}.png`, name: input.name }, layout: input.layout });
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  let release!: (value: ArrayBuffer) => void;
+  const pending = new Promise<ArrayBuffer>(resolve => { release = resolve; });
+  const files = ['第一张.png', '第二张.png'].map(name => ({ name, type: 'image/png', size: 10, arrayBuffer: () => pending }));
+  fireEvent.paste(screen.getByRole('heading', { name: '我的看板' }), { clipboardData: { files } });
+  try {
+    await user.click(screen.getByRole('button', { name: '我的一天' }));
+    assert.ok(screen.getByRole('heading', { name: '我的看板' }), 'navigation must wait for images that have not reached IPC yet');
+  } finally {
+    await act(async () => { release(new ArrayBuffer(10)); await pending; });
+    await waitFor(() => assert.equal(engine.state.boardCards.length, 2));
+  }
+  await screen.findByRole('heading', { name: '我的一天' });
+});
+
+test('board pins tasks live, saves keyboard movement and resize, removes with undo without deleting source', async () => {
+  const { api, engine, user, add } = await mount(); await add('看板中的任务');
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  const board = within(screen.getByRole('region', { name: '自由看板' }));
+  await user.click(board.getByRole('button', { name: '任务' }));
+  await user.click(screen.getByRole('button', { name: /看板中的任务.*贴到看板/ }));
+  const card = await screen.findByRole('article', { name: '任务贴纸：看板中的任务' });
+  assert.equal(engine.state.boardCards.length, 1);
+  const start = { ...engine.state.boardCards[0].values.layout };
+  fireEvent.keyDown(card, { key: 'ArrowRight', shiftKey: true });
+  fireEvent.keyDown(within(card).getByRole('button', { name: '调整任务贴纸大小：看板中的任务' }), { key: 'ArrowDown' });
+  await user.click(screen.getByRole('button', { name: /^我的一天/ }));
+  await screen.findByRole('heading', { name: '我的一天' });
+  assert.equal(engine.state.boardCards[0].values.layout.x, start.x + 50);
+  assert.equal(engine.state.boardCards[0].values.layout.height, start.height + 10);
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  await user.click(screen.getByRole('button', { name: '完成任务：看板中的任务' }));
+  await waitFor(() => assert.equal(engine.state.tasks[0].values.completed, true));
+  await act(async () => { await api.command({ type: 'task.update', id: engine.state.tasks[0].id, patch: { title: '实时更新的任务' } }); });
+  await screen.findByRole('article', { name: '任务贴纸：实时更新的任务' });
+  await user.click(screen.getByRole('article', { name: '任务贴纸：实时更新的任务' }));
+  await user.click(screen.getByRole('button', { name: '从看板移除' }));
+  await waitFor(() => assert.equal(engine.state.boardCards[0].values.deleted, true));
+  assert.equal(engine.state.tasks[0].values.deleted, false);
+  await user.click(screen.getByRole('button', { name: '撤销' }));
+  await screen.findByRole('article', { name: '任务贴纸：实时更新的任务' });
+  assert.deepEqual(engine.state.boardCards[0].values.layout, { ...start, x: start.x + 50, height: start.height + 10 });
+});
+
+test('board creates a persistent note, edits slogans, retains failed saves, and can retry', async () => {
+  const { api, engine, user } = await mount();
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  const board = within(screen.getByRole('region', { name: '自由看板' }));
+  await user.click(board.getByRole('button', { name: '便签' }));
+  await user.click(screen.getByRole('button', { name: '新建便签' }));
+  await user.type(screen.getByRole('textbox', { name: '便签内容' }), '记得留一点时间读书');
+  await user.click(screen.getByRole('button', { name: '创建并贴上' }));
+  await screen.findByRole('article', { name: '便签贴纸：无标题便签' });
+  assert.equal(engine.state.notes[0].values.content, '记得留一点时间读书');
+  await user.click(board.getByRole('button', { name: '文字 / 标语' }));
+  await user.type(screen.getByRole('textbox', { name: '文字内容' }), '每天前进一点点');
+  const original = api.command; let fail = true;
+  api.command = async command => { if (fail && command.type === 'board.card.add') throw new Error('测试保存失败'); return original(command); };
+  await user.click(screen.getByRole('button', { name: '贴到看板' }));
+  await screen.findByText('测试保存失败');
+  assert.equal((screen.getByRole('textbox', { name: '文字内容' }) as HTMLTextAreaElement).value, '每天前进一点点');
+  fail = false; await user.click(screen.getByRole('button', { name: '贴到看板' }));
+  await screen.findByRole('article', { name: '文字贴纸：每天前进一点点' });
+  await user.click(screen.getByRole('button', { name: '打开文字：每天前进一点点' }));
+  await user.clear(screen.getByRole('textbox', { name: '文字内容' }));
+  await user.type(screen.getByRole('textbox', { name: '文字内容' }), '今日事，今日毕');
+  await user.selectOptions(screen.getByRole('combobox', { name: '文字对齐' }), 'center');
+  await user.click(screen.getByRole('button', { name: '保存修改' }));
+  await screen.findByRole('article', { name: '文字贴纸：今日事，今日毕' });
+  assert.equal(engine.state.boardCards.find(card => card.values.content.kind === 'text')!.values.align, 'center');
+});
+
+test('board background chooser stages preview and cancel keeps the old background; apply saves chosen styles', async () => {
+  const { api, engine, user } = await mount();
+  const id = `${'c'.repeat(64)}.png`;
+  api.pickBoardImage = async () => ({ state: await api.getState(), assetId: id });
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  await user.click(screen.getByRole('button', { name: '背景' }));
+  await user.click(screen.getByRole('button', { name: '选择背景图片' }));
+  await screen.findByRole('img', { name: '背景预览' });
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  assert.equal(engine.state.boards.length, 0);
+  await user.click(screen.getByRole('button', { name: '背景' }));
+  await user.click(screen.getByRole('button', { name: '选择背景图片' }));
+  await screen.findByRole('img', { name: '背景预览' });
+  await user.selectOptions(screen.getByRole('combobox', { name: '背景显示' }), 'contain');
+  fireEvent.change(screen.getByLabelText('背景颜色'), { target: { value: '#112233' } });
+  await user.click(screen.getByRole('button', { name: '应用背景' }));
+  await waitFor(() => assert.equal(engine.state.boards[0].values.backgroundId, id));
+  assert.equal(engine.state.boards[0].values.backgroundFit, 'contain');
+  assert.equal(engine.state.boards[0].values.backgroundColor, '#112233');
+});
+
+test('board pastes images and accepts a file drop over its empty state; invalid images show feedback', async () => {
+  const { api, engine, user } = await mount();
+  api.insertBoardImage = async input => api.command({ type: 'board.card.add', content: { kind: 'image', assetId: `${'d'.repeat(64)}.png`, name: input.name }, layout: input.layout });
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  const file = { name: '图片.png', type: 'image/png', size: 10, arrayBuffer: async () => new ArrayBuffer(10) };
+  const drop = new dom.window.MouseEvent('drop', { bubbles: true, cancelable: true, clientX: 80, clientY: 100 });
+  Object.defineProperty(drop, 'dataTransfer', { value: { files: [file], types: ['Files'] } });
+  fireEvent(screen.getByText('把想做的、想记的，贴在这里'), drop);
+  await screen.findByRole('article', { name: '图片贴纸：图片.png' });
+  fireEvent.paste(screen.getByRole('heading', { name: '我的看板' }), { clipboardData: { files: [{ ...file, name: '粘贴.png' }] } });
+  await screen.findByRole('article', { name: '图片贴纸：粘贴.png' });
+  assert.equal(engine.state.boardCards.length, 2);
+  fireEvent.paste(screen.getByRole('heading', { name: '我的看板' }), { clipboardData: { files: [{ ...file, name: '内容.txt', type: 'text/plain' }] } });
+  await screen.findByText(/请选择 PNG、JPEG、GIF 或 WebP 图片/);
+  assert.equal(engine.state.boardCards.length, 2);
+});
+
+test('board preserves unsaved movement after failure and blocks leaving until the retry succeeds', async () => {
+  const { api, engine, user } = await mount();
+  await act(async () => { await api.command({ type: 'board.card.add', content: { kind: 'text', text: '保留位置' } }); });
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  const original = api.command; let fail = true;
+  api.command = async command => { if (fail && command.type === 'board.card.update' && command.patch.layout) throw new Error('位置保存失败'); return original(command); };
+  fireEvent.keyDown(screen.getByRole('article', { name: '文字贴纸：保留位置' }), { key: 'ArrowRight' });
+  await user.click(screen.getByRole('button', { name: '我的一天' }));
+  await screen.findByText('位置未保存');
+  assert.ok(screen.getByRole('heading', { name: '我的看板' }));
+  assert.equal(engine.state.boardCards[0].values.layout.x, 40);
+  fail = false; await user.click(screen.getByRole('button', { name: '重试' }));
+  await waitFor(() => assert.equal(engine.state.boardCards[0].values.layout.x, 50));
+  await user.click(screen.getByRole('button', { name: '我的一天' }));
+  await screen.findByRole('heading', { name: '我的一天' });
+});
 
 test('settings recycle bin restores records and requires confirmation before permanent deletion', async () => {
   const { api, engine, user, add } = await mount(); await add('回收站中的任务');
@@ -393,10 +548,189 @@ test('UI creates a custom list and routes a new task into it', async () => {
   await user.type(screen.getByLabelText('清单名称'), '生活清单');
   await user.click(screen.getByRole('button', { name: '绿色' }));
   await user.click(screen.getByRole('button', { name: '保存清单' }));
-  await user.click(await screen.findByRole('button', { name: '生活清单' }));
+  await screen.findByRole('heading', { name: '生活清单' });
   await add('买一本新书');
   assert.equal(engine.state.lists[0].values.color, 'green');
   assert.equal(engine.state.tasks[0].values.listId, engine.state.lists[0].id);
+});
+
+test('search additions go to inbox without silently inheriting the previous smart list', async () => {
+  const { engine, user, add } = await mount();
+  await user.click(screen.getByRole('button', { name: /^重要/ }));
+  await user.type(screen.getByRole('textbox', { name: '搜索任务' }), '找不到的关键词');
+  assert.ok(screen.getByText('新任务将添加到“任务”'));
+  await add('搜索时记下的新任务');
+  await screen.findByRole('heading', { name: '任务' });
+  const task = engine.state.tasks[0].values;
+  assert.equal(task.listId, 'inbox'); assert.equal(task.important, false);
+  assert.equal(task.myDay, null); assert.equal(task.dueDate, null);
+});
+
+test('planned composer displays its default date and clearing it creates a visible undated task', async () => {
+  const { engine, user, add } = await mount();
+  await user.click(screen.getByRole('button', { name: /^计划/ }));
+  assert.equal((screen.getByLabelText('新任务截止日期') as HTMLInputElement).value, localDate());
+  assert.ok(screen.getByText('截止日期：今天'));
+  await add('今天要交的任务');
+  assert.equal(engine.state.tasks[0].values.dueDate, localDate());
+  await user.click(screen.getByRole('button', { name: '清除新任务截止日期' }));
+  await add('还没有定日期的任务');
+  await screen.findByRole('heading', { name: '任务' });
+  assert.equal(engine.state.tasks[1].values.dueDate, null);
+});
+
+test('planned sort matches its label and each list remembers its own sorting choice', async () => {
+  const { engine, api, user } = await mount();
+  await act(async () => {
+    await api.command({ type: 'task.add', title: '较早添加、较早截止', listId: 'inbox', dueDate: '2030-01-01' });
+    await api.command({ type: 'task.add', title: '较晚添加、较晚截止', listId: 'inbox', dueDate: '2030-02-01' });
+    engine.state.tasks[0].values.createdAt = '2026-01-01T00:00:00.000Z';
+    engine.state.tasks[1].values.createdAt = '2026-01-02T00:00:00.000Z';
+    await api.command({ type: 'task.update', id: engine.state.tasks[0].id, patch: { important: true } });
+  });
+  await user.click(screen.getByRole('button', { name: /^计划/ }));
+  const order = () => [...document.querySelectorAll('.task-title')].map(element => element.textContent);
+  assert.equal((screen.getByLabelText('任务排序') as HTMLSelectElement).value, 'due');
+  assert.deepEqual(order(), ['较早添加、较早截止', '较晚添加、较晚截止']);
+  await user.selectOptions(screen.getByLabelText('任务排序'), 'created');
+  assert.deepEqual(order(), ['较晚添加、较晚截止', '较早添加、较早截止']);
+  await user.click(screen.getByRole('button', { name: /^全部任务/ }));
+  await user.selectOptions(screen.getByLabelText('任务排序'), 'title');
+  await user.click(screen.getByRole('button', { name: /^计划/ }));
+  assert.equal((screen.getByLabelText('任务排序') as HTMLSelectElement).value, 'created');
+});
+
+test('collapsed completed tasks remain discoverable in search and in the completed view', async () => {
+  const { user, add } = await mount(); await add('已完成也能找到');
+  await user.click(screen.getByRole('button', { name: '完成 已完成也能找到' }));
+  await user.click(screen.getByRole('button', { name: /^已完成/, expanded: true }));
+  assert.equal(screen.queryByText('已完成也能找到', { exact: true }), null);
+  await user.type(screen.getByRole('textbox', { name: '搜索任务' }), '也能找到');
+  assert.ok(screen.getByText('已完成也能找到', { exact: true }));
+  await user.click(within(screen.getByRole('navigation', { name: '智能清单' })).getByRole('button', { name: /^已完成/ }));
+  assert.ok(screen.getByText('已完成也能找到', { exact: true }));
+});
+
+test('Escape saves a title without blur and closes only the current details layer', async () => {
+  const { engine, user, add } = await mount(); await add('查找原任务');
+  await user.type(screen.getByRole('textbox', { name: '搜索任务' }), '查找');
+  await user.click(screen.getByText('查找原任务', { exact: true }));
+  const title = screen.getByRole('textbox', { name: '任务名称' });
+  title.focus(); fireEvent.change(title, { target: { value: '查找改名后的任务' } });
+  await user.keyboard('{Escape}');
+  await waitFor(() => assert.equal(screen.queryByRole('textbox', { name: '任务名称' }), null));
+  assert.equal(engine.state.tasks[0].values.title, '查找改名后的任务');
+  assert.equal((screen.getByRole('textbox', { name: '搜索任务' }) as HTMLInputElement).value, '查找');
+  await waitFor(() => assert.equal(document.activeElement?.textContent?.startsWith('查找改名后的任务'), true));
+});
+
+test('failed task edits block leaving details, preserve text, and allow a successful retry', async () => {
+  const { engine, api, user, add } = await mount(); await add('保存前的名称');
+  await user.click(screen.getByText('保存前的名称', { exact: true }));
+  const command = api.command;
+  api.command = async () => { throw new Error('磁盘暂时不可写'); };
+  fireEvent.change(screen.getByRole('textbox', { name: '任务名称' }), { target: { value: '一定要保留的名称' } });
+  await user.click(screen.getByRole('button', { name: /^全部任务/ }));
+  await screen.findByText('内容未能保存，请重试后再离开当前页面。');
+  assert.equal((screen.getByRole('textbox', { name: '任务名称' }) as HTMLTextAreaElement).value, '一定要保留的名称');
+  assert.equal(engine.state.tasks[0].values.title, '保存前的名称');
+  api.command = command;
+  await user.click(screen.getByRole('button', { name: '关闭任务详情' }));
+  await waitFor(() => assert.equal(screen.queryByRole('textbox', { name: '任务名称' }), null));
+  assert.equal(engine.state.tasks[0].values.title, '一定要保留的名称');
+});
+
+test('unsaved task names survive incoming updates and the final keystroke during a save', async () => {
+  const { engine, api, user, add } = await mount(); await add('原来的名称');
+  await user.click(screen.getByText('原来的名称', { exact: true }));
+  const title = screen.getByRole('textbox', { name: '任务名称' });
+  const command = api.command; let release!: () => void; let saving = false;
+  api.command = async input => {
+    if (input.type === 'task.update' && input.patch.title && !saving) {
+      saving = true; await new Promise<void>(resolve => { release = resolve; });
+    }
+    return command(input);
+  };
+  fireEvent.change(title, { target: { value: '正在保存的名称' } });
+  title.focus(); fireEvent.keyDown(title, { key: 'Enter' });
+  await waitFor(() => assert.equal(saving, true));
+  fireEvent.change(title, { target: { value: '保存中继续输入的最后一个字' } });
+  await act(async () => { await command({ type: 'task.update', id: engine.state.tasks[0].id, patch: { title: '后台同步的名称' } }); });
+  assert.equal((title as HTMLTextAreaElement).value, '保存中继续输入的最后一个字');
+  await act(async () => release());
+  await waitFor(() => assert.equal(engine.state.tasks[0].values.title, '保存中继续输入的最后一个字'));
+});
+
+test('input-method Enter does not submit forms and input-method Escape does not close details', async () => {
+  const { engine, user } = await mount();
+  const composer = screen.getByRole('textbox', { name: '添加任务' });
+  fireEvent.change(composer, { target: { value: '中文候选词' } });
+  assert.equal(fireEvent.keyDown(composer, { key: 'Enter', isComposing: true, keyCode: 229 }), false);
+  assert.equal(engine.state.tasks.length, 0);
+  await user.click(screen.getByRole('button', { name: '添加' }));
+  await user.click(screen.getByText('中文候选词', { exact: true }));
+  fireEvent.keyDown(screen.getByRole('textbox', { name: '任务名称' }), { key: 'Escape', isComposing: true });
+  assert.ok(screen.getByRole('textbox', { name: '任务名称' }));
+  assert.equal(fireEvent.keyDown(screen.getByRole('textbox', { name: '添加步骤' }), { key: 'Enter', isComposing: true }), false);
+  assert.equal(engine.state.steps.length, 0);
+});
+
+test('compact search submits to visible results and Ctrl F selects the current query', async () => {
+  const { user, add } = await mount(); await add('窄屏搜索的任务'); await resize(420);
+  await user.keyboard('{Control>}f{/Control}');
+  await waitFor(() => assert.equal(document.activeElement, screen.getByRole('textbox', { name: '搜索任务' })));
+  await user.type(screen.getByRole('textbox', { name: '搜索任务' }), '窄屏{Enter}');
+  await waitFor(() => assert.equal(document.getElementById('list-navigation')!.hasAttribute('inert'), true));
+  assert.ok(screen.getByText('窄屏搜索的任务', { exact: true }));
+  await user.click(screen.getByRole('button', { name: '退出搜索' }));
+  await screen.findByRole('heading', { name: '我的一天' });
+});
+
+test('steps can be renamed and a deletion can be undone without losing the name', async () => {
+  const { engine, user, add } = await mount(); await add('检查步骤操作');
+  await user.click(screen.getByText('检查步骤操作', { exact: true }));
+  await user.type(screen.getByRole('textbox', { name: '添加步骤' }), '原步骤{Enter}');
+  await user.click(await screen.findByRole('button', { name: '编辑步骤 原步骤' }));
+  const input = screen.getByRole('textbox', { name: '步骤名称' });
+  await user.clear(input); await user.type(input, '改名后的步骤{Enter}');
+  await screen.findByRole('button', { name: '编辑步骤 改名后的步骤' });
+  await waitFor(() => assert.equal(document.activeElement, screen.getByRole('button', { name: '编辑步骤 改名后的步骤' })));
+  await user.click(screen.getByRole('button', { name: '删除步骤 改名后的步骤' }));
+  await user.click(await screen.findByRole('button', { name: '撤销' }));
+  await screen.findByRole('button', { name: '编辑步骤 改名后的步骤' });
+  assert.equal(engine.state.steps[0].values.deleted, false);
+  assert.equal(engine.state.steps[0].values.title, '改名后的步骤');
+});
+
+test('list deletion requires a deliberate confirmation and preserves its tasks', async () => {
+  const { engine, user, add } = await mount();
+  await user.click(screen.getAllByRole('button', { name: '新建清单' })[0]);
+  await user.type(screen.getByLabelText('清单名称'), '有任务的清单');
+  await user.click(screen.getByRole('button', { name: '保存清单' }));
+  await screen.findByRole('heading', { name: '有任务的清单' }); await add('需要保留的任务');
+  await user.click(screen.getByRole('button', { name: '编辑清单' }));
+  await user.click(screen.getByRole('button', { name: '删除清单' }));
+  assert.equal(engine.state.lists[0].values.deleted, false);
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  assert.ok(screen.getByLabelText('清单名称'));
+  await user.click(screen.getByRole('button', { name: '删除清单' }));
+  await user.click(screen.getByRole('button', { name: '确认删除清单' }));
+  await screen.findByRole('heading', { name: '任务' });
+  assert.equal(engine.state.lists[0].values.deleted, true);
+  assert.equal(engine.state.tasks[0].values.deleted, false);
+  assert.equal(engine.state.tasks[0].values.listId, 'inbox');
+});
+
+test('note-gallery deletion presents its usable undo inside the active modal', async () => {
+  const { engine, api, user } = await mount();
+  await act(async () => { await api.command({ type: 'note.add', title: '可撤销的便签' }); });
+  await user.click(screen.getByRole('button', { name: /^桌面便签/ }));
+  const gallery = screen.getByRole('dialog', { name: '桌面便签' });
+  await user.click(within(gallery).getByRole('button', { name: '删除便签 可撤销的便签' }));
+  const undo = await within(gallery).findByRole('button', { name: '撤销' });
+  await user.click(undo);
+  await within(gallery).findByRole('button', { name: '打开便签 可撤销的便签' });
+  assert.equal(engine.state.notes[0].values.deleted, false);
 });
 test('settings choose a local folder and persist the selected zoom without a cloud login', async () => {
   const { user } = await mount();
@@ -573,6 +907,40 @@ test('image insertion uses a relative Markdown asset and preview opens only the 
   api.showDocumentFile = async target => { assert.equal(target.id, engine.state.tasks[0].id); revealed = true; };
   await user.click(screen.getByRole('button', { name: '打开备注文件位置' }));
   assert.equal(revealed, true);
+});
+
+test('a partial document image import keeps the successfully imported image visible', async () => {
+  const { api, engine, user, add } = await mount(); await add('部分图片导入');
+  await user.click(screen.getByText('部分图片导入', { exact: true }));
+  await user.selectOptions(screen.getByRole('combobox', { name: '备注格式' }), 'markdown');
+  let count = 0;
+  api.insertDocumentImage = async () => { if (++count === 2) throw new Error('第二张图片无法读取'); return { path: `assets/${'e'.repeat(64)}.png`, name: '第一张.png' }; };
+  const files = ['第一张.png', '第二张.png'].map(name => ({ name, type: 'image/png', size: 10, arrayBuffer: async () => new ArrayBuffer(10) }));
+  fireEvent.paste(screen.getByRole('textbox', { name: '备注' }), { clipboardData: { files } });
+  await screen.findByText('第二张图片无法读取');
+  assert.match(engine.state.tasks[0].values.notes, /!\[第一张.png\]/);
+});
+
+test('a note flush waits for image insertion and saves the resulting Markdown before acknowledging', async () => {
+  const { api, engine } = await mount(); cleanup();
+  engine.apply({ type: 'note.add', title: '图片便签', content: '原正文', format: 'markdown' });
+  let flush!: (id: string) => void; let acknowledged = false;
+  api.onNoteFlush = callback => { flush = callback; return () => {}; };
+  api.noteFlushed = async (_id, success) => { assert.equal(success, true); acknowledged = true; };
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  api.insertDocumentImage = async () => { await pending; return { path: `assets/${'f'.repeat(64)}.png`, name: '便签图片.png' }; };
+  const { NoteEditor } = await import('../src/notes/StickyNoteWindow');
+  render(React.createElement(NoteEditor, { note: engine.state.notes[0], state: await api.getState(), api }));
+  fireEvent.paste(screen.getByRole('textbox', { name: '便签内容' }), { clipboardData: { files: [{ name: '便签图片.png', type: 'image/png', size: 10, arrayBuffer: async () => new ArrayBuffer(10) }] } });
+  try {
+    await act(async () => { flush('save-before-close'); await Promise.resolve(); });
+    assert.equal(acknowledged, false, 'the note must not close before the imported image is written into its text');
+  } finally {
+    await act(async () => { release(); await pending; });
+    await waitFor(() => assert.match(engine.state.notes[0].values.content, /!\[便签图片.png\]/));
+  }
+  await waitFor(() => assert.equal(acknowledged, true));
 });
 
 test('screenshots insert at the saved task-note selection and persist a document-scoped image', async () => {

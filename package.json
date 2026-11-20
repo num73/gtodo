@@ -1,7 +1,7 @@
 {
   "name": "gtodo",
   "productName": "GTodo",
-  "version": "0.1.2",
+  "version": "0.2.1",
   "private": true,
   "description": "支持番茄钟、桌面便签、日历同步与自适应缩放的桌面待办应用",
   "author": "GTodo",
@@ -14,6 +14,7 @@
     "start": "electron .",
     "test": "tsx --test tests/*.test.ts",
     "test:notes": "node scripts/test-notes-native.mjs",
+    "test:data": "node scripts/test-workspace-actions-native.mjs",
     "test:capture": "node scripts/test-screen-capture-native.mjs",
     "test:pomodoro-layout": "node scripts/test-pomodoro-layout.mjs",
     "test:taskbar": "node scripts/test-taskbar-native.mjs",

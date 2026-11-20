@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Camera, Code, Eye, FolderOpen, ImagePlus, Pencil } from 'lucide-react';
 import { MAX_IMAGE_BYTES, type AssetMap, type DocumentFormat, type DocumentTarget } from '../shared/documents';
+import { isComposing } from './keyboard';
+import { registerMainDraft } from '../notes/draft';
 export default function DocumentEditor({ target, label, value, format, assets, onChange, onFormatChange, onSave, disabled = false, sticky = false, toolbarTarget, collapsedToolbar = false, onToolbarAction }: {
   target: DocumentTarget; label: string; value: string; format: DocumentFormat; assets: AssetMap;
   onChange: (value: string) => void; onFormatChange: (format: DocumentFormat) => Promise<void>; onSave: () => Promise<void>;
@@ -14,16 +16,20 @@ export default function DocumentEditor({ target, label, value, format, assets, o
   const [preview, setPreview] = useState(false);
   const [Preview, setPreviewComponent] = useState<typeof import('./MarkdownPreview').default | null>(null);
   const [busy, setBusy] = useState(false);
+  const pending = useRef<Promise<unknown> | null>(null);
   const [error, setError] = useState('');
   const [confirmCapture, setConfirmCapture] = useState(false);
   const active = useRef(true);
   const currentTarget = useRef(''); currentTarget.current = `${target.kind}:${target.id}`;
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  useEffect(() => registerMainDraft({ flush: async () => { await pending.current; } }), []);
   const api = window.gtodo;
   async function execute(action: () => Promise<unknown>, closeToolbar = false) {
+    if (pending.current) return;
     setBusy(true); setError('');
-    try { await action(); if (closeToolbar) onToolbarAction?.(); } catch (error) { setError((error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
-    finally { setBusy(false); }
+    const operation = Promise.resolve().then(action); pending.current = operation;
+    try { await operation; if (closeToolbar) onToolbarAction?.(); } catch (error) { setError((error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+    finally { pending.current = null; setBusy(false); }
   }
   function remember() { if (editor.current) selection.current = { start: editor.current.selectionStart, end: editor.current.selectionEnd }; }
   function insert(text: string, original = latest.current.value, selected = selection.current) {
@@ -42,12 +48,16 @@ export default function DocumentEditor({ target, label, value, format, assets, o
   async function importFiles(files: File[]) {
     const before = latest.current.value; const selected = { ...selection.current };
     const inserted: string[] = [];
+    let failure: unknown;
     for (const file of files) {
-      if (file.size > MAX_IMAGE_BYTES) throw new Error('单张图片不能超过 10 MB。');
-      const image = await api!.insertDocumentImage({ target, name: file.name.slice(0, 200), bytes: new Uint8Array(await file.arrayBuffer()) });
-      inserted.push(imageMarkdown(image));
+      try {
+        if (file.size > MAX_IMAGE_BYTES) throw new Error('单张图片不能超过 10 MB。');
+        const image = await api!.insertDocumentImage({ target, name: file.name.slice(0, 200), bytes: new Uint8Array(await file.arrayBuffer()) });
+        inserted.push(imageMarkdown(image));
+      } catch (error) { failure = error; break; }
     }
-    insert(inserted.join('\n'), before, selected); await onSave();
+    if (inserted.length) { insert(inserted.join('\n'), before, selected); await onSave(); }
+    if (failure) throw failure;
   }
   function screenshot(convert = false) {
     const identity = currentTarget.current;
@@ -87,7 +97,11 @@ export default function DocumentEditor({ target, label, value, format, assets, o
       </>}
       <button type="button" className="document-location" aria-label={`打开${label}文件位置`} title="打开文件位置" disabled={disabled || busy} onClick={() => void execute(async () => { await onSave(); await api!.showDocumentFile(target); }, true)}><FolderOpen size={16} /></button>
     </div>;
-  return <div className={`document-editor ${sticky ? 'document-editor-sticky' : ''}`} data-format={format}>
+  return <div className={`document-editor ${sticky ? 'document-editor-sticky' : ''}`} data-format={format} onKeyDown={event => {
+    if (event.key !== 'Escape' || isComposing(event.nativeEvent)) return;
+    if (confirmCapture) { event.stopPropagation(); if (!busy) setConfirmCapture(false); }
+    else if (preview) { event.stopPropagation(); setPreview(false); window.requestAnimationFrame(() => editor.current?.focus()); }
+  }}>
     {collapsedToolbar ? (toolbarTarget ? createPortal(toolbar, toolbarTarget) : null) : toolbar}
     {confirmCapture && <div className="document-capture-confirm" role="group" aria-label="截图格式确认"><span>插入截图需要 Markdown。</span><div><button type="button" disabled={busy} onClick={() => setConfirmCapture(false)}>取消</button><button type="button" disabled={disabled || busy} onClick={() => screenshot(true)}>转换并截图</button></div></div>}
     {preview && format === 'markdown' && Preview ? <Preview value={value} label={label} target={target} assets={assets} openLink={url => { void execute(() => api!.openLink(url)); }} /> : <textarea ref={editor} className="document-source" aria-label={label} placeholder={label === '备注' ? '添加备注' : '输入内容'} maxLength={100000} value={value} disabled={disabled} rows={6} spellCheck={false}

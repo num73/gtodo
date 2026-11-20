@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { OutlookCalendarOption, OutlookStatus } from './outlook';
 import type { PaneLayout } from './layout';
 import { assetMapSchema, documentFormatSchema, type CreateNoteInput, type DocumentTarget } from './documents';
+import { boardValuesSchema, boardCardValuesSchema, boardContentSchema, boardLayoutSchema, boardCardPatchSchema, type Board, type BoardCard, type BoardImageInput } from './board';
 
 const id = z.string().min(1).max(160).regex(/^[a-zA-Z0-9@._:-]+$/);
 const title = z.string().trim().min(1, '请输入名称').max(500);
@@ -12,7 +13,7 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
 const nullableDate = date.nullable();
 export const clockSchema = z.object({ tick: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1000000), device: id });
 export type Clock = z.infer<typeof clockSchema>;
-export const recordKindSchema = z.enum(['task', 'note', 'list', 'step']);
+export const recordKindSchema = z.enum(['task', 'note', 'list', 'step', 'boardCard']);
 export const purgedRecordSchema = z.object({ kind: recordKindSchema, id, clock: clockSchema });
 export type PurgedRecord = z.infer<typeof purgedRecordSchema>;
 const noteLinkSchema = z.object({ noteId: id, taskLife: clockSchema, noteLife: clockSchema, detached: z.object({ side: z.enum(['task', 'note']), clock: clockSchema }).optional() }).nullable();
@@ -57,17 +58,20 @@ export const workspaceSchema = z.object({
   tasks: z.array(recordSchema(taskValuesSchema)).max(100000),
   steps: z.array(recordSchema(stepValuesSchema)).max(200000),
   notes: z.array(recordSchema(noteValuesSchema)).max(10000).default([]),
+  boards: z.array(recordSchema(boardValuesSchema)).max(1).default([]),
+  boardCards: z.array(recordSchema(boardCardValuesSchema)).max(5000).default([]),
   purged: z.array(purgedRecordSchema).max(400000).default([]),
 }).superRefine((value, ctx) => {
-  for (const key of ['lists', 'tasks', 'steps', 'notes'] as const) {
+  for (const key of ['lists', 'tasks', 'steps', 'notes', 'boards', 'boardCards'] as const) {
     if (new Set(value[key].map(item => item.id)).size !== value[key].length) {
       ctx.addIssue({ code: 'custom', message: `${key} 中有重复标识` });
     }
   }
+  if (value.boards.some(item => item.id !== 'main')) ctx.addIssue({ code: 'custom', message: '看板标识无效' });
 });
-export interface Workspace { schemaVersion: 1; lists: TaskList[]; tasks: Task[]; steps: Step[]; notes: Note[]; purged: PurgedRecord[] }
+export interface Workspace { schemaVersion: 1; lists: TaskList[]; tasks: Task[]; steps: Step[]; notes: Note[]; boards: Board[]; boardCards: BoardCard[]; purged: PurgedRecord[] }
 export function parseWorkspace(value: unknown): Workspace { return workspaceSchema.parse(value) as Workspace; }
-export function emptyWorkspace(): Workspace { return { schemaVersion: 1, lists: [], tasks: [], steps: [], notes: [], purged: [] }; }
+export function emptyWorkspace(): Workspace { return { schemaVersion: 1, lists: [], tasks: [], steps: [], notes: [], boards: [], boardCards: [], purged: [] }; }
 export function localDate(value = new Date()): string {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 }
@@ -82,6 +86,11 @@ export function nextDate(value: string, repeat: TaskValues['repeat']): string {
   return localDate(day);
 }
 export const commandSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('board.update'), patch: boardValuesSchema.partial() }),
+  z.object({ type: z.literal('board.card.add'), content: boardContentSchema, layout: boardLayoutSchema.optional(), style: boardCardValuesSchema.pick({ color: true, textColor: true, fontSize: true, align: true, imageFit: true }).partial().optional() }),
+  z.object({ type: z.literal('board.source.add'), kind: z.enum(['task', 'note']), title: z.string().trim().max(200), content: z.string().max(100000), layout: boardLayoutSchema.optional() }),
+  z.object({ type: z.literal('board.card.update'), id, patch: boardCardPatchSchema }),
+  z.object({ type: z.literal('board.card.layer'), id, front: z.boolean() }),
   z.object({ type: z.literal('task.add'), title, listId: id, myDay: nullableDate.optional(), important: z.boolean().optional(), dueDate: nullableDate.optional() }),
   z.object({ type: z.literal('task.update'), id, patch: taskValuesSchema.omit({ seriesId: true, createdAt: true, completedAt: true, notesFormat: true, notesAssets: true, noteLink: true }).partial().extend({ notesFormat: documentFormatSchema.optional(), notesAssets: assetMapSchema.optional() }) }),
   z.object({ type: z.literal('task.link-note'), id }),
@@ -132,6 +141,8 @@ export interface DesktopAPI {
   syncOutlook(): Promise<AppState>;
   createNote(input?: CreateNoteInput): Promise<string>;
   createLinkedNote(taskId: string): Promise<string>;
+  pickBoardImage(input: BoardImageInput): Promise<{ state: AppState; assetId: string } | null>;
+  insertBoardImage(input: BoardImageInput & { bytes: Uint8Array; name: string }): Promise<AppState>;
   pickDocumentImage(target: DocumentTarget): Promise<{ path: string; name: string } | null>;
   captureDocumentImage(target: DocumentTarget): Promise<{ path: string; name: string } | null>;
   insertDocumentImage(input: { target: DocumentTarget; bytes: Uint8Array; name: string }): Promise<{ path: string; name: string }>;

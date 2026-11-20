@@ -20,7 +20,7 @@ export async function applyCommandWithDrafts(command: Command, options: {
     const note = workspace.notes.find(note => note.id === command.id);
     flushMain = !!note && !!linkedTaskForNote(workspace, note);
   }
-  if (flushMain && !await options.flushMain()) throw new Error('任务备注尚未保存，已取消删除。请检查保存提示后重试。');
+  if (flushMain && !await options.flushMain()) throw new Error('任务修改尚未保存，已取消删除。请检查保存提示后重试。');
   const update = () => options.update(command);
   if (noteId) await options.withSavedNote(noteId, update); else await update();
 }

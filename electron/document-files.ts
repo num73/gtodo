@@ -7,6 +7,7 @@ import { assetIdSchema, documentFileName, documentParts, isAssetPath, MAX_IMAGE_
 import type { Workspace } from '../src/shared/model';
 import type { WorkspaceEngine } from '../src/shared/engine';
 import { linkedTaskForNote, linkedTasksByNote } from '../src/shared/note-links';
+import { boardAssetIds } from '../src/shared/board';
 import { atomicWrite } from './storage';
 
 const hash = (data: string | Uint8Array) => createHash('sha256').update(data).digest('hex');
@@ -87,6 +88,7 @@ export class DocumentFiles {
   private serialized = '{}';
   private initialized = false;
   private pending = new Map<string, { hash: string; since: number }>();
+  private stagedBoardImages = new Set<string>();
   notice: string | null = null;
   constructor(readonly directory: string, private options: { settleMs?: number; now?: () => number } = {}) {}
   private key(root: string, parts: string[]) { return path.resolve(root, ...parts); }
@@ -117,7 +119,14 @@ export class DocumentFiles {
     const id = `${hash(bytes)}.${imageType(bytes)}`;
     const cache = path.join(this.directory, 'media'); await mkdir(cache, { recursive: true });
     const file = await safePath(cache, [id]);
-    if (!await optionalRead(cache, [id], MAX_IMAGE_BYTES)) await atomicWrite(file, Buffer.from(bytes));
+    const verified = Buffer.from(bytes);
+    if (!(await optionalRead(cache, [id], MAX_IMAGE_BYTES))?.equals(verified)) await atomicWrite(file, verified);
+    return id;
+  }
+  async stageBoardImage(bytes: Uint8Array) {
+    const id = await this.cacheImage(bytes);
+    this.stagedBoardImages.add(id);
+    if (this.stagedBoardImages.size > 50) this.stagedBoardImages.delete(this.stagedBoardImages.values().next().value!);
     return id;
   }
   private async cached(id: string) {
@@ -128,6 +137,14 @@ export class DocumentFiles {
   }
   async readChanges(root: string, engine: WorkspaceEngine, known: Workspace[]): Promise<Scan> {
     await this.initialize();
+    for (const id of boardAssetIds(engine.state)) {
+      if (await this.cached(id)) continue;
+      const bytes = await optionalRead(root, ['board', 'assets', id], MAX_IMAGE_BYTES);
+      if (bytes) {
+        if (`${hash(bytes)}.${imageType(bytes)}` !== id) throw new Error('看板图片尚未完整同步或校验失败，请稍后重试。');
+        await this.cacheImage(bytes);
+      }
+    }
     const scan: Scan = { protected: new Set(), observed: new Map() };
     const knownEntries = known.flatMap(entries);
     for (const original of entries(engine.state).filter(item => !item.deleted)) {
@@ -171,6 +188,13 @@ export class DocumentFiles {
   }
   async writeDocuments(root: string, workspace: Workspace, scan: Scan) {
     await this.initialize();
+    for (const id of boardAssetIds(workspace)) {
+      const bytes = await this.cached(id); if (!bytes) continue;
+      const parts = ['board', 'assets', id];
+      const old = await optionalRead(root, parts, MAX_IMAGE_BYTES);
+      if (!old) await atomicWrite(await safePath(root, parts, true), bytes);
+      else if (!old.equals(bytes)) throw new Error('看板图片校验失败，请保留文件并检查备份。');
+    }
     for (const entry of entries(workspace).filter(item => !item.deleted)) {
       const parts = [...documentParts(entry), documentFileName(entry.format)]; const key = this.key(root, parts);
       if (!scan.protected.has(key)) {
@@ -234,7 +258,7 @@ export class DocumentFiles {
   async backup(workspace: Workspace) {
     const attachments: Record<string, string> = {};
     let size = Buffer.byteLength(JSON.stringify(workspace));
-    for (const id of new Set(entries(workspace).flatMap(entry => Object.values(entry.assets)))) {
+    for (const id of new Set([...entries(workspace).flatMap(entry => Object.values(entry.assets)), ...boardAssetIds(workspace)])) {
       const data = await this.cached(id); if (!data) throw new Error('有图片尚未同步完成，请稍后再导出备份。');
       attachments[id] = data.toString('base64'); size += attachments[id].length;
       if (size > MAX_BACKUP_BYTES - 1024 * 1024) throw new Error('含图片的备份超过 160 MB，请直接备份整个数据文件夹。');
@@ -242,6 +266,14 @@ export class DocumentFiles {
     const serialized = JSON.stringify({ ...workspace, attachments });
     if (Buffer.byteLength(serialized) > MAX_BACKUP_BYTES) throw new Error('含图片的备份超过 160 MB，请直接备份整个数据文件夹。');
     return serialized;
+  }
+  async readBoardImage(root: string, workspace: Workspace, value: string) {
+    const id = assetIdSchema.parse(value);
+    if (!boardAssetIds(workspace).includes(id) && !this.stagedBoardImages.has(id)) throw new Error('看板图片不存在。');
+    const bytes = await this.cached(id) ?? await optionalRead(root, ['board', 'assets', id], MAX_IMAGE_BYTES);
+    if (!bytes) throw new Error('图片尚未同步。');
+    if (`${hash(bytes)}.${imageType(bytes)}` !== id) throw new Error('看板图片校验失败。');
+    return { bytes, type: imageType(bytes) };
   }
   async importAttachments(value: unknown) {
     const assets = z.record(assetIdSchema, z.string().max(Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 4)).parse(value ?? {});

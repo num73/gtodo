@@ -4,6 +4,7 @@ import { assetIdSchema, documentParts } from '../src/shared/documents';
 import type { Workspace } from '../src/shared/model';
 import type { TrashItem, TrashSnapshot } from '../src/shared/trash';
 import { trashRecords } from '../src/shared/trash';
+import { boardAssetIds } from '../src/shared/board';
 
 type FileEntry = { root: string; parts: string[]; bytes: number };
 type Plan = { files: FileEntry[]; directories: { root: string; parts: string[] }[] };
@@ -41,6 +42,7 @@ function referencedAssets(workspaces: Workspace[]) {
   return new Set(workspaces.flatMap(workspace => [
     ...workspace.tasks.flatMap(item => Object.values(item.values.notesAssets)),
     ...workspace.notes.flatMap(item => Object.values(item.values.assets)),
+    ...boardAssetIds(workspace),
   ]));
 }
 async function cleanupPlan(root: string, localRoot: string, workspace: Workspace, backup: Workspace) {
@@ -55,6 +57,17 @@ async function cleanupPlan(root: string, localRoot: string, workspace: Workspace
         const value = await checked(localRoot, ['media', name]);
         if (!value.info.isFile()) throw new Error('图片缓存被其他文件占用。');
         await scan(localRoot, ['media', name], plan);
+      }
+    }
+  } catch (error) { if (!missing(error)) throw error; }
+  try {
+    const assets = await checked(root, ['board', 'assets']);
+    if (!assets.info.isDirectory()) throw new Error('看板图片路径不是文件夹。');
+    for (const name of await readdir(assets.file)) {
+      if (assetIdSchema.safeParse(name).success && !used.has(name)) {
+        const value = await checked(root, ['board', 'assets', name]);
+        if (!value.info.isFile()) throw new Error('看板图片被其他文件占用。');
+        await scan(root, ['board', 'assets', name], plan);
       }
     }
   } catch (error) { if (!missing(error)) throw error; }

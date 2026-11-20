@@ -29,7 +29,7 @@ export default function RecycleBin({ api, close, update, toast }: {
   const filtered = items.filter(item => `${item.title}\n${item.preview}\n${trashKindNames[item.kind]}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   const total = items.reduce((sum, item) => sum + item.bytes, 0) + (snapshot?.residualBytes ?? 0);
   const target = (item: TrashTarget): TrashTarget => ({ kind: item.kind, id: item.id, clock: item.clock });
-  return <Modal title="回收站" close={close} wide busy={busy}>
+  return <Modal title="回收站" close={() => confirmation ? setConfirmation(null) : close()} wide busy={busy}>
     <div className="recycle-body">
       {confirmation ? <div role="alertdialog" aria-label="永久删除确认">
         <h3>{confirmation.title}</h3>

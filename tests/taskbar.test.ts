@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { APP_USER_MODEL_ID, taskbarDetails } from '../electron/taskbar';
 
 test('taskbar pins the outer portable launcher instead of the disposable process executable', () => {
-  const launcher = 'E:\\我的软件 & tools\\GTodo-v0.1.2-Windows-x64.exe';
+  const launcher = 'E:\\我的软件 & tools\\GTodo-v0.2.1-Windows-x64.exe';
   const first = taskbarDetails({platform: 'win32', packaged: true, executable: 'C:\\Temp\\nsc123.tmp\\app\\GTodo.exe', portableExecutable: launcher});
   const next = taskbarDetails({platform: 'win32', packaged: true, executable: 'C:\\Temp\\nsc999.tmp\\app\\GTodo.exe', portableExecutable: launcher});
   assert.deepEqual(first, next);

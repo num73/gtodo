@@ -69,7 +69,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .hero-row > div:first-child { min-width: 0; }
 .page-heading { display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .page-heading h1 { color: var(--text); font-size: 24px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
-.page-subtitle { font-size: 12px; color: var(--muted); margin-top: 7px; line-height: 1.6; }
+.page-subtitle { font-size: 12px; color: var(--muted); margin-top: 7px; line-height: 1.6; overflow-wrap: anywhere; }
+.hero-row > div:first-child { min-width: 0; }
 .header-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .soft-button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 4px; background: #fff; border: 1px solid #d9dde3; color: var(--muted); font-size: 12px; }
 .soft-button:hover, .soft-button.pressed { background: var(--panel); border-color: #aeb6c1; }
@@ -99,7 +100,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .completed-task .task-title, .strikethrough { text-decoration: line-through; color: #7b838e; }
 .completed-task .task-check { background: #7b8797; border-color: #7b8797; }
 .completed-section { margin-top: 22px; }
-.completed-heading { display: flex; align-items: center; gap: 7px; padding: 5px 0 10px; color: var(--muted); font-size: 12px; }
+.completed-heading { display: flex; align-items: center; gap: 7px; padding: 5px 0 10px; color: var(--muted); font-size: 12px; font-weight: 400; }
 .completed-heading span { margin-left: 3px; font-variant-numeric: tabular-nums; }
 .empty-state { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 30px 12px; color: var(--muted); }
 .empty-state h2 { font-size: 14px; font-weight: 400; }
@@ -111,10 +112,14 @@ h1, h2, h3, h4, p { margin: 0; }
 .add-task-button { background: var(--accent); color: #fff; font-size: 12px; padding: 7px 13px; border-radius: 3px; white-space: nowrap; }
 .add-task-button:not(:disabled):hover { background: #1d4ed8; }
 .add-task-button:disabled { background: #eef0f3; color: #8a929d; opacity: 1; }
-.quick-date { position: relative; display: grid; place-items: center; cursor: pointer; }
-.quick-date input { position: absolute; opacity: 0; inset: 0; width: 23px; height: 24px; cursor: pointer; overflow: hidden; }
+.quick-date { position: relative; display: grid; place-items: center; cursor: pointer; flex: 0 0 28px; height: 30px; border-radius: 3px; }
+.quick-date:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.quick-date input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; cursor: pointer; overflow: hidden; }
 .quick-date input::-webkit-calendar-picker-indicator { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; margin: 0; padding: 0; }
 .quick-date.has-date { color: var(--accent); }
+.composer-hint { color: var(--muted); font-size: 12px; margin-bottom: 7px; }
+.composer-date { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--accent); margin-top: 6px; }
+.composer-date .icon-button { width: 24px; height: 24px; }
 .suggestions-panel { margin-top: 18px; padding: 4px 14px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
 .suggestions-panel > p { font-size: 12px; color: var(--muted); padding: 7px 0; }
 .suggestion-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); padding: 10px 0; font-size: 13px; }
@@ -151,6 +156,10 @@ h1, h2, h3, h4, p { margin: 0; }
 .detail-title-row > .icon-button { width: 24px; }
 .step-row { display: flex; align-items: center; gap: 7px; padding: 5px 0; font-size: 13px; }
 .step-row > span { flex: 1; overflow-wrap: anywhere; }
+.step-title, .step-title-input { flex: 1; min-width: 0; text-align: left; padding: 4px 3px; font-size: 13px; line-height: 1.6; }
+.step-title { overflow-wrap: anywhere; border-radius: 3px; }
+.step-title:hover { background: var(--hover); }
+.step-title-input { width: 100%; border: 1px solid var(--accent); border-radius: 3px; }
 .step-check { width: 23px; height: 23px; display: grid; place-items: center; color: #8f99a7; border: 0; padding: 3px; flex-shrink: 0; }
 .step-check.checked { color: var(--accent); }
 .step-form { display: flex; align-items: center; gap: 7px; padding: 10px 0; border-top: 1px solid var(--line); margin-top: 6px; color: var(--muted); }
@@ -246,6 +255,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50; display: flex; align-items: center; gap: 10px; border: 1px solid #343d4c; border-radius: 4px; background: #303845; color: #fff; padding: 10px 13px; font-size: 12px; max-width: min(600px, calc(100vw - 24px)); line-height: 1.7; }
 .toast button { color: #d6e5ff; font-size: 12px; display: flex; align-items: center; white-space: nowrap; }
 .toast > span { overflow-wrap: anywhere; }
+.modal > .toast { position: sticky; left: auto; bottom: 10px; transform: none; margin: 10px 12px; max-width: none; }
+.modal > .toast > span { flex: 1; }
 .task-context-menu { position: fixed; z-index: 60; width: 208px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 4px; background: #fff; border: 1px solid var(--line); border-radius: 4px; }
 .task-context-menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; text-align: left; font-size: 13px; border-radius: 2px; }
 .task-context-menu button svg { flex-shrink: 0; }

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { commandSchema, localDate, nextZoom, noteWindowActionSchema, parseWorkspace, zoomSteps, type AppState, type Command, type ZoomAction } from '../src/shared/model';
 import { linkedNoteForTask } from '../src/shared/note-links';
 import { applyCommandWithDrafts } from './linked-note-commands';
+import { withSavedWorkspace } from './workspace-actions';
 import { atomicWrite, DataStore } from './storage';
 import { FolderStorage } from './folder-storage';
 import { PreferencesStore, type Preferences } from './preferences';
@@ -22,6 +23,7 @@ import { formatCountdown, phaseLabels, pomodoroCommandSchema, remainingTime } fr
 import { trashTargetSchema, trashTargetsSchema } from '../src/shared/trash';
 import { ScreenCapture } from './screen-capture';
 import { APP_USER_MODEL_ID, taskbarDetails } from './taskbar';
+import { boardImageInputSchema } from '../src/shared/board';
 
 app.setName('GTodo');
 app.setAppUserModelId(APP_USER_MODEL_ID);
@@ -103,6 +105,15 @@ async function applyCommand(command: Command) {
     flushMain: () => mainRendererReady ? notes.flushWindow(window) : Promise.resolve(true),
     withSavedNote: (id, action) => notes.withSaved(id, action),
     update: command => folders.update(engine => engine.apply(command)),
+  });
+}
+async function withSavedData<T>(operation: string, action: () => Promise<T>) {
+  await startupWindows;
+  return withSavedWorkspace(action, {
+    flushMain: () => mainRendererReady ? notes.flushWindow(window) : Promise.resolve(true),
+    flushNotes: () => notes.flushAll(),
+    resume: () => { if (!preparingToQuit) notes.resumeInteractions(); },
+    failureMessage: `有内容尚未保存，已取消${operation}。请检查保存提示后重试。`,
   });
 }
 function trayAction(action: () => Promise<unknown>) {
@@ -218,6 +229,12 @@ async function initialize() {
   const root = path.join(app.getAppPath(), 'dist');
   protocol.handle('gtodo', async request => {
     const url = new URL(request.url);
+    if (url.hostname === 'app' && url.pathname.startsWith('/board-media/')) {
+      try {
+        const data = await folders.documents.readBoardImage(folders.directory, store.engine.state, decodeURIComponent(url.pathname.slice('/board-media/'.length)));
+        return new Response(data.bytes, { headers: { 'Content-Type': `image/${data.type === 'jpg' ? 'jpeg' : data.type}`, 'Cache-Control': 'no-store' } });
+      } catch { return new Response('Image unavailable', { status: 404, headers: { 'Cache-Control': 'no-store' } }); }
+    }
     if (url.hostname === 'app' && url.pathname.startsWith('/media/')) {
       try {
         const parts = url.pathname.split('/').slice(2).map(decodeURIComponent);
@@ -324,6 +341,23 @@ async function initialize() {
     }
     documentEntry(store.engine.state, target);
   }
+  handle('gtodo:board-image-pick', async (value, event) => {
+    const input = boardImageInputSchema.parse(value);
+    const owner = BrowserWindow.fromWebContents(event.sender)!;
+    const result = await dialog.showOpenDialog(owner, { title: input.destination === 'background' ? '选择看板背景' : '添加图片到看板', properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const file = result.filePaths[0];
+    if ((await stat(file)).size > MAX_IMAGE_BYTES) throw new Error('单张图片不能超过 10 MB。');
+    const bytes = await readFile(file);
+    const assetId = await folders.documents.stageBoardImage(bytes);
+    if (input.destination === 'card') await folders.addBoardImage(input, bytes, path.basename(file));
+    return { state: state(), assetId };
+  });
+  handle('gtodo:board-image', async value => {
+    const input = boardImageInputSchema.extend({ bytes: z.instanceof(Uint8Array).refine(bytes => bytes.length <= MAX_IMAGE_BYTES), name: z.string().max(200) }).parse(value);
+    await folders.addBoardImage(input, input.bytes, input.name);
+    return state();
+  });
   handle('gtodo:document-image-pick', async (value, event) => {
     const target = documentTargetSchema.parse(value); checkDocumentOwner(event, target);
     const owner = BrowserWindow.fromWebContents(event.sender)!;
@@ -385,7 +419,7 @@ async function initialize() {
   handle('gtodo:show-main', showMain, true, true);
   handle('gtodo:choose-folder', async () => {
     const result = await dialog.showOpenDialog(window!, { title: '选择 GTodo 数据文件夹', defaultPath: folders.directory, properties: ['openDirectory', 'createDirectory'], buttonLabel: '使用此文件夹' });
-    if (!result.canceled && result.filePaths[0]) await folders.changeDirectory(result.filePaths[0]);
+    if (!result.canceled && result.filePaths[0]) await withSavedData('切换数据文件夹', () => folders.changeDirectory(result.filePaths[0]));
     return state();
   });
   handle('gtodo:open-folder', async () => { const error = await shell.openPath(folders.directory); if (error) throw new Error('无法打开数据文件夹，请检查路径是否存在。'); });
@@ -416,8 +450,9 @@ async function initialize() {
   handle('gtodo:export', async () => {
     const result = await dialog.showSaveDialog(window!, { title: '导出 GTodo 备份', defaultPath: `GTodo-备份-${localDate()}.json`, filters: [{ name: 'GTodo 备份', extensions: ['json'] }] });
     if (result.canceled || !result.filePath) return false;
-    await folders.refresh();
-    await atomicWrite(result.filePath, await folders.documents.backup(store.engine.state)); return true;
+    return withSavedData('导出备份', async () => {
+      await atomicWrite(result.filePath!, await folders.exportBackup()); return true;
+    });
   });
   handle('gtodo:import', async () => {
     const result = await dialog.showOpenDialog(window!, { title: '导入并合并 GTodo 备份', properties: ['openFile'], filters: [{ name: 'GTodo 备份', extensions: ['json'] }] });
@@ -427,7 +462,7 @@ async function initialize() {
     let attachments;
     try { const data = JSON.parse(await readFile(result.filePaths[0], 'utf8')); imported = parseWorkspace(data); attachments = data.attachments; }
     catch { throw new Error('这不是有效的 GTodo 备份，现有数据未改变。'); }
-    await folders.importBackup(imported, attachments); return state();
+    await withSavedData('导入备份', () => folders.importBackup(imported, attachments)); return state();
   });
   ipcMain.on('gtodo:window', (event, action) => {
     trusted(event);

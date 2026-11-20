@@ -60,7 +60,6 @@
   .composer-wrap { padding: 8px 10px 10px; }
   .composer { padding: 7px; gap: 6px; }
   .composer > input { font-size: 13px; }
-  .quick-date { display: none; }
   .details-fields > label { flex-direction: column; align-items: stretch; }
   .settings-body, .modal-header, .list-form { padding: 12px; }
   .data-location-card { padding: 10px; }

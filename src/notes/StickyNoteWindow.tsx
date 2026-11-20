@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ArrowUpRight, Check, Ellipsis, Link2, LoaderCircle, Pin, PinOff, Plus, RotateCcw, StickyNote, Trash2, X } from 'lucide-react';
 import { noteColors, type AppState, type DesktopAPI, type Note } from '../shared/model';
-import { NoteDraft } from './draft';
+import { flushMainDrafts, NoteDraft } from './draft';
 import DocumentEditor from '../components/DocumentEditor';
 import { linkedTaskForNote } from '../shared/note-links';
+import { isComposing } from '../components/keyboard';
 
 export const noteColorNames = {
   yellow: '黄色', orange: '橙色', coral: '珊瑚色', rose: '粉色', purple: '紫色', indigo: '靛蓝',
@@ -52,7 +53,7 @@ export function NoteEditor({ note, state, api }: { note: Note; state: AppState; 
     return () => document.removeEventListener('pointerdown', dismiss);
   }, [toolsOpen]);
   useEffect(() => api.onNoteFlush(requestId => {
-    void draft.flush().then(() => api.noteFlushed(requestId, true), () => api.noteFlushed(requestId, false)).catch(() => {});
+    void flushMainDrafts().then(() => draft.flush()).then(() => api.noteFlushed(requestId, true), () => api.noteFlushed(requestId, false)).catch(() => {});
   }), [api, draft]);
   async function execute(action: () => Promise<unknown>, flush = false) {
     setBusy(true); setError('');
@@ -61,8 +62,10 @@ export function NoteEditor({ note, state, api }: { note: Note; state: AppState; 
     finally { setBusy(false); }
   }
   return <main className={`sticky-sheet sticky-${snapshot.values.color}`} aria-label="桌面便签" onKeyDown={event => {
+    if (isComposing(event.nativeEvent)) return;
     if (event.ctrlKey && event.key.toLowerCase() === 's') { event.preventDefault(); void execute(() => draft.flush()); }
-    if (event.key === 'Escape') { setConfirmDelete(false); setToolsOpen(false); toolsButton.current?.focus(); }
+    if (event.key === 'Escape' && confirmDelete) { event.stopPropagation(); setConfirmDelete(false); }
+    else if (event.key === 'Escape' && toolsOpen) { event.stopPropagation(); setToolsOpen(false); toolsButton.current?.focus(); }
   }}>
     <header className="sticky-dragbar" title="拖动以移动便签">
       <span className="sticky-window-label" title="拖动此处移动便签"><StickyNote size={14} /></span>
