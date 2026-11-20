@@ -104,7 +104,7 @@ export const commandSchema = z.discriminatedUnion('type', [
 export type Command = z.infer<typeof commandSchema>;
 export interface FolderStatus { error: string | null; lastRead: string | null; notice?: string | null }
 export interface NoteWindowSettings { open: boolean; pinned: boolean; bounds?: { x: number; y: number; width: number; height: number } }
-export interface AppState { workspace: Workspace; deviceId: string; dataPath: string; notice: string | null; folder: FolderStatus; zoom: number; version: string; paneLayout: PaneLayout; pomodoroWindow: NoteWindowSettings; noteWindows: Record<string, NoteWindowSettings>; outlook: OutlookStatus }
+export interface AppState { workspace: Workspace; deviceId: string; dataPath: string; notice: string | null; folder: FolderStatus; zoom: number; version: string; mainWindow: { maximized: boolean; fullScreen: boolean }; paneLayout: PaneLayout; pomodoroWindow: NoteWindowSettings; noteWindows: Record<string, NoteWindowSettings>; outlook: OutlookStatus }
 export const noteWindowActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('open'), id }), z.object({ type: z.literal('hide'), id }),
   z.object({ type: z.literal('pin'), id, pinned: z.boolean() }),

@@ -60,8 +60,9 @@ const notified = new Set<string>();
 let quitting = false;
 const devURL = !app.isPackaged && process.env.GTODO_DEV_URL === 'http://127.0.0.1:5173' ? process.env.GTODO_DEV_URL : null;
 function state(): AppState {
+  const mainWindow = window && !window.isDestroyed() ? { maximized: window.isMaximized(), fullScreen: window.isFullScreen() } : { maximized: false, fullScreen: false };
   return { workspace: structuredClone(store.engine.state), deviceId: store.engine.deviceId, dataPath: folders.directory,
-    notice: store.notice, folder: { ...folders.status }, zoom: preferences.value.zoom, version: app.getVersion(), paneLayout: { ...preferences.value.paneLayout }, pomodoroWindow: structuredClone(preferences.value.pomodoroWindow), noteWindows: structuredClone(preferences.value.noteWindows), outlook: outlook?.snapshot() ?? emptyOutlookStatus() };
+    notice: store.notice, folder: { ...folders.status }, zoom: preferences.value.zoom, version: app.getVersion(), mainWindow, paneLayout: { ...preferences.value.paneLayout }, pomodoroWindow: structuredClone(preferences.value.pomodoroWindow), noteWindows: structuredClone(preferences.value.noteWindows), outlook: outlook?.snapshot() ?? emptyOutlookStatus() };
 }
 function changed() {
   const current = state();
@@ -210,7 +211,9 @@ function createWindow() {
   }
   window.once('ready-to-show', () => window?.show());
   window.on('resize', rememberWindow); window.on('move', rememberWindow);
-  window.on('maximize', rememberWindow); window.on('unmaximize', rememberWindow);
+  window.on('maximize', () => { rememberWindow(); changed(); });
+  window.on('unmaximize', () => { rememberWindow(); changed(); });
+  window.on('enter-full-screen', changed); window.on('leave-full-screen', changed);
   window.on('close', event => {
     rememberWindow();
     if (quitting) return;
@@ -467,7 +470,11 @@ async function initialize() {
   ipcMain.on('gtodo:window', (event, action) => {
     trusted(event);
     if (action === 'minimize') window?.minimize();
-    if (action === 'maximize') { if (window?.isMaximized()) window.unmaximize(); else window?.maximize(); }
+    if (action === 'maximize') {
+      if (window?.isFullScreen()) window.setFullScreen(false);
+      else if (window?.isMaximized()) window.unmaximize();
+      else window?.maximize();
+    }
     if (action === 'close') window?.close();
   });
   ipcMain.on('gtodo:quit', event => { trusted(event); app.quit(); });

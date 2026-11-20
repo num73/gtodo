@@ -1,4 +1,8 @@
 /* CSS-pixel breakpoints apply to both window size and interface zoom. */
+/* Navigation uses the same measured fit decision as focus and drawer behavior. */
+.app-shell[data-navigation="drawer"] .mobile-nav-toggle { display: inline-flex; }
+.app-shell[data-navigation="drawer"] .sidebar { position: absolute; left: 0; top: 0; bottom: 0; width: min(250px, calc(100vw - 24px)); flex: none; z-index: 30; transform: translateX(-100%); visibility: hidden; }
+.app-shell[data-navigation="drawer"] .sidebar.sidebar-open { transform: translateX(0); visibility: visible; }
 @media (min-width: 1500px) {
   .main-scroll { padding: 32px 44px 20px; }
   .composer-wrap { padding-left: 44px; padding-right: 44px; }
@@ -11,9 +15,6 @@
   .composer-wrap { padding-left: 24px; padding-right: 24px; }
 }
 @media (max-width: 760px) {
-  .mobile-nav-toggle { display: inline-flex; }
-  .sidebar { position: absolute; left: 0; top: 0; bottom: 0; width: min(250px, calc(100vw - 24px)); flex: none; z-index: 30; transform: translateX(-100%); visibility: hidden; }
-  .sidebar.sidebar-open { transform: translateX(0); visibility: visible; }
   .main-scroll { padding: 22px; }
   .composer-wrap { padding: 10px 22px 16px; }
 }

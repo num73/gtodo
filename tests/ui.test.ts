@@ -18,6 +18,7 @@ Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, co
 dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
 dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
 let viewportWidth = 1320;
+Object.defineProperty(dom.window, 'innerWidth', { get: () => viewportWidth, configurable: true });
 const mediaListeners = new Set<() => void>();
 dom.window.matchMedia = (query: string) => ({
   media: query, get matches() { return viewportWidth <= Number(query.match(/max-width:\s*(\d+)px/)?.[1] ?? 0); },
@@ -30,21 +31,22 @@ const { default: App } = await import('../src/App');
 const { default: PomodoroWindow } = await import('../src/pomodoro/PomodoroWindow');
 afterEach(() => { cleanup(); viewportWidth = 1320; });
 after(() => dom.window.close());
-async function resize(width: number) { await act(async () => { viewportWidth = width; for (const listener of mediaListeners) listener(); }); }
+async function resize(width: number) { await act(async () => { viewportWidth = width; for (const listener of mediaListeners) listener(); dom.window.dispatchEvent(new dom.window.Event('resize')); }); }
 
-async function mount() {
+async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout) {
   const engine = new WorkspaceEngine('ui-test-device');
   let dataPath = 'isolated-test-profile'; let zoom = 100; let outlook = emptyOutlookStatus();
   const timerListeners = new Set<(state: PomodoroSnapshot) => void>();
   const stateListeners = new Set<(state: AppState) => void>();
   let timerView: ReturnType<typeof render> | null = null;
-  let paneLayout: PaneLayout = { ...defaultPaneLayout };
+  let paneLayout: PaneLayout = { ...initialPaneLayout };
+  let mainWindow = { maximized: false, fullScreen: false };
   const pomodoroWindow = { open: false, pinned: false };
   const timer = new PomodoroTimer({ directory: 'unused-memory-only', write: async () => {}, task: id => {
     const task = engine.state.tasks.find(task => task.id === id && !task.values.completed && !task.values.deleted);
     return task ? { id: task.id, title: task.values.title } : null;
   }, changed: value => { for (const listener of timerListeners) listener(value); } });
-  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.2.1', paneLayout: { ...paneLayout }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook });
+  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.2.1', mainWindow: { ...mainWindow }, paneLayout: { ...paneLayout }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook });
   const publish = () => { for (const listener of stateListeners) listener(snapshot()); };
   const api: DesktopAPI = {
     getPomodoro: async () => timer.snapshot(), pomodoroCommand: command => timer.command(command),
@@ -89,8 +91,46 @@ async function mount() {
     await user.click(screen.getByRole('button', { name: '添加' }));
     await screen.findByText(title, { exact: true });
   };
-  return { engine, api, user, add, timer };
+  return { engine, api, user, add, timer, setMainWindow: (value: typeof mainWindow) => { mainWindow = value; publish(); } };
 }
+
+test('window button follows native maximize, restore and full-screen state', async () => {
+  const { user, api, setMainWindow } = await mount();
+  const actions: string[] = [];
+  api.windowControl = action => { actions.push(action); };
+  const normalIcon = screen.getByRole('button', { name: '最大化' }).innerHTML;
+  await user.click(screen.getByRole('button', { name: '最大化' }));
+  assert.deepEqual(actions, ['maximize']);
+  await act(async () => setMainWindow({ maximized: true, fullScreen: false }));
+  const restore = screen.getByRole('button', { name: '还原窗口' });
+  assert.notEqual(restore.innerHTML, normalIcon);
+  await user.click(restore);
+  assert.deepEqual(actions, ['maximize', 'maximize']);
+  await act(async () => setMainWindow({ maximized: false, fullScreen: false }));
+  assert.equal(screen.getByRole('button', { name: '最大化' }).innerHTML, normalIcon);
+  await act(async () => setMainWindow({ maximized: false, fullScreen: true }));
+  assert.notEqual(screen.getByRole('button', { name: '退出全屏' }).innerHTML, normalIcon);
+});
+
+test('navigation stays visible when both columns fit and returns after expanding a closed drawer', async () => {
+  await resize(640);
+  const { user } = await mount({ sidebar: 420, details: 322 });
+  const navigation = document.getElementById('list-navigation')!;
+  assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'sidebar');
+  assert.equal(navigation.hasAttribute('inert'), false);
+  assert.ok(screen.getByRole('separator', { name: '调整清单栏宽度' }));
+  // An oversized saved preference must shrink to fit instead of hiding navigation.
+  await resize(500);
+  assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'sidebar');
+  assert.ok(Number(screen.getByRole('separator', { name: '调整清单栏宽度' }).getAttribute('aria-valuenow')) <= 194);
+  await resize(420);
+  assert.equal(navigation.hasAttribute('inert'), true);
+  await user.click(screen.getByRole('button', { name: '展开清单导航' }));
+  await user.click(screen.getByRole('button', { name: '收起清单导航' }));
+  await resize(640);
+  assert.equal(navigation.hasAttribute('inert'), false);
+  assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'sidebar');
+});
 
 test('board resize at the canvas edge keeps the origin fixed and clamps the size', async () => {
   const { api, engine, user } = await mount();
@@ -750,7 +790,7 @@ test('resizing switches details to a drawer without discarding an in-progress no
   await resize(640);
   assert.ok(screen.getByRole('dialog', { name: '任务详情' }));
   assert.equal((screen.getByRole('textbox', { name: '备注' }) as HTMLTextAreaElement).value, '正在编辑的内容');
-  assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'drawer');
+  assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'sidebar');
   await resize(1320);
   assert.equal(screen.queryByRole('dialog', { name: '任务详情' }), null);
   assert.equal((screen.getByRole('textbox', { name: '备注' }) as HTMLTextAreaElement).value, '正在编辑的内容');
@@ -1046,7 +1086,7 @@ test('pane resizing preserves the draft, remembers widths and uses drawers on a 
   assert.equal((screen.getByRole('textbox', { name: '备注' }) as HTMLTextAreaElement).value, '调整分栏时保留');
   fireEvent.doubleClick(left);
   await waitFor(async () => assert.equal((await api.getState()).paneLayout.sidebar, 224));
-  await resize(640);
+  await resize(420);
   assert.equal(screen.queryByRole('separator'), null);
   assert.ok(screen.getByRole('dialog', { name: '任务详情' }));
   await resize(1320);
