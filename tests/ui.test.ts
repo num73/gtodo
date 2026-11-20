@@ -17,6 +17,11 @@ Object.assign(globalThis, { window: dom.window, document: dom.window.document, H
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
 dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
 dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+// JSDOM has no pointer capture; native board tests cover the browser behavior.
+const pointerCaptures = new WeakMap<HTMLElement, Set<number>>();
+dom.window.HTMLElement.prototype.setPointerCapture = function (id) { const ids = pointerCaptures.get(this) ?? new Set<number>(); ids.add(id); pointerCaptures.set(this, ids); };
+dom.window.HTMLElement.prototype.hasPointerCapture = function (id) { return pointerCaptures.get(this)?.has(id) ?? false; };
+dom.window.HTMLElement.prototype.releasePointerCapture = function (id) { pointerCaptures.get(this)?.delete(id); };
 let viewportWidth = 1320;
 Object.defineProperty(dom.window, 'innerWidth', { get: () => viewportWidth, configurable: true });
 const mediaListeners = new Set<() => void>();
@@ -221,13 +226,91 @@ test('board creates a persistent note, edits slogans, retains failed saves, and 
   assert.equal((screen.getByRole('textbox', { name: '文字内容' }) as HTMLTextAreaElement).value, '每天前进一点点');
   fail = false; await user.click(screen.getByRole('button', { name: '贴到看板' }));
   await screen.findByRole('article', { name: '文字贴纸：每天前进一点点' });
-  await user.click(screen.getByRole('button', { name: '打开文字：每天前进一点点' }));
+  await user.dblClick(screen.getByRole('button', { name: '移动或编辑文字：每天前进一点点' }));
   await user.clear(screen.getByRole('textbox', { name: '文字内容' }));
   await user.type(screen.getByRole('textbox', { name: '文字内容' }), '今日事，今日毕');
   await user.selectOptions(screen.getByRole('combobox', { name: '文字对齐' }), 'center');
   await user.click(screen.getByRole('button', { name: '保存修改' }));
   await screen.findByRole('article', { name: '文字贴纸：今日事，今日毕' });
   assert.equal(engine.state.boardCards.find(card => card.values.content.kind === 'text')!.values.align, 'center');
+});
+
+test('text stickers have no header, keep editing and keyboard movement, and save preset or custom backgrounds', async () => {
+  const { user, engine } = await mount();
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  await user.click(screen.getByRole('button', { name: '文字 / 标语' }));
+  await user.type(screen.getByRole('textbox', { name: '文字内容' }), '今天也要加油');
+  const presets = screen.getByRole('group', { name: '背景预设' });
+  assert.equal(within(presets).getAllByRole('button').length, 8);
+  await user.click(within(presets).getByRole('button', { name: '浅蓝背景' }));
+  assert.equal(engine.state.boardCards.length, 0, 'choosing a color must not submit the editor');
+  await user.click(screen.getByRole('button', { name: '贴到看板' }));
+  const card = await screen.findByRole('article', { name: '文字贴纸：今天也要加油' });
+  assert.equal(card.querySelector('.board-card-header'), null);
+  assert.equal(engine.state.boardCards[0].values.color, '#dbeafe');
+  const body = within(card).getByRole('button', { name: '移动或编辑文字：今天也要加油' });
+  const original = { ...engine.state.boardCards[0].values.layout };
+  fireEvent.keyDown(body, { key: 'ArrowRight' });
+  await act(() => flushMainDrafts());
+  assert.equal(engine.state.boardCards[0].values.layout.x, original.x + 10);
+  fireEvent.keyDown(body, { key: 'Enter' });
+  assert.equal(screen.getByRole('button', { name: '浅蓝背景' }).getAttribute('aria-pressed'), 'true');
+  await user.click(screen.getByRole('button', { name: '淡紫背景' }));
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  assert.equal(engine.state.boardCards[0].values.color, '#dbeafe');
+  await user.dblClick(body);
+  fireEvent.change(screen.getByLabelText('自定义背景'), { target: { value: '#abcdef' } });
+  await user.click(screen.getByRole('button', { name: '保存修改' }));
+  await waitFor(() => assert.equal(engine.state.boardCards[0].values.color, '#abcdef'));
+  fireEvent.keyDown(body, { key: 'Delete' });
+  await waitFor(() => assert.equal(engine.state.boardCards[0].values.deleted, true));
+  await user.click(screen.getByRole('button', { name: '撤销' }));
+  await screen.findByRole('article', { name: '文字贴纸：今天也要加油' });
+});
+
+test('board fullscreen keeps editing and undo inside the board and exits for application navigation', async t => {
+  let fullscreenElement: Element | null = null, rejectFullscreen = false;
+  const fullscreenDescriptor = Object.getOwnPropertyDescriptor(document, 'fullscreenElement');
+  const requestDescriptor = Object.getOwnPropertyDescriptor(dom.window.HTMLElement.prototype, 'requestFullscreen');
+  const exitDescriptor = Object.getOwnPropertyDescriptor(document, 'exitFullscreen');
+  Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => fullscreenElement });
+  Object.defineProperty(dom.window.HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: async function (this: HTMLElement) {
+    if (rejectFullscreen) throw new Error('Fullscreen denied');
+    fullscreenElement = this; document.dispatchEvent(new dom.window.Event('fullscreenchange'));
+  } });
+  Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: async () => { fullscreenElement = null; document.dispatchEvent(new dom.window.Event('fullscreenchange')); } });
+  t.after(() => {
+    for (const [target, key, descriptor] of [[document, 'fullscreenElement', fullscreenDescriptor], [dom.window.HTMLElement.prototype, 'requestFullscreen', requestDescriptor], [document, 'exitFullscreen', exitDescriptor]] as const) {
+      if (descriptor) Object.defineProperty(target, key, descriptor); else Reflect.deleteProperty(target, key);
+    }
+  });
+  const { user, api, engine } = await mount();
+  await act(async () => { await api.command({ type: 'board.card.add', content: { kind: 'text', text: '全屏中的标语' } }); });
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  const board = screen.getByRole('region', { name: '自由看板' });
+  await user.click(screen.getByRole('button', { name: '全屏看板' }));
+  assert.equal(fullscreenElement, board);
+  assert.ok(screen.getByRole('button', { name: '退出看板全屏' }));
+  await user.dblClick(screen.getByRole('button', { name: '移动或编辑文字：全屏中的标语' }));
+  assert.ok(board.contains(screen.getByRole('dialog', { name: '编辑文字 / 标语' })));
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  await user.click(screen.getByRole('button', { name: '从看板移除' }));
+  const undo = await screen.findByRole('button', { name: '撤销' });
+  assert.equal(undo.closest('.toast')?.parentElement, board);
+  await user.click(undo);
+  await waitFor(() => assert.equal(engine.state.boardCards[0].values.deleted, false));
+  await user.click(screen.getByRole('button', { name: '退出看板全屏' }));
+  assert.equal(fullscreenElement, null);
+  assert.equal(screen.getByRole('button', { name: '撤销' }).closest('.toast')?.parentElement, document.body);
+  await user.click(screen.getByRole('button', { name: '全屏看板' }));
+  await user.keyboard('{Control>}k{/Control}');
+  await waitFor(() => assert.equal(fullscreenElement, null));
+  await waitFor(() => assert.equal(document.activeElement, screen.getByRole('textbox', { name: '搜索任务' })));
+  rejectFullscreen = true;
+  await user.click(screen.getByRole('button', { name: '全屏看板' }));
+  await screen.findByText('无法切换看板全屏，请重试。');
+  assert.equal(fullscreenElement, null);
+  assert.equal(screen.getByRole('button', { name: '全屏看板' }).hasAttribute('disabled'), false);
 });
 
 test('board background chooser stages preview and cancel keeps the old background; apply saves chosen styles', async () => {

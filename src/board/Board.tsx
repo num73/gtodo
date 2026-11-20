@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import { LayoutDashboard, CheckCircle2, StickyNote, Type, Image as ImageIcon, Wallpaper, Plus, Minus, Maximize, ArrowUpToLine, ArrowDownToLine, X, Palette, ArrowUpRight, Search } from 'lucide-react';
+import { LayoutDashboard, CheckCircle2, StickyNote, Type, Image as ImageIcon, Wallpaper, Plus, Minus, Maximize, Maximize2, Minimize2, Check, ArrowUpToLine, ArrowDownToLine, X, Palette, ArrowUpRight, Search } from 'lucide-react';
 import type { AppState, Command, DesktopAPI } from '../shared/model';
 import { BOARD_SIZE, boardCardTitle, clampBoardLayout, defaultBoard, defaultCardStyle, type BoardCard as Card, type BoardCardValues, type BoardContent, type BoardImageInput, type BoardLayout, type BoardValues } from '../shared/board';
 import { MAX_IMAGE_BYTES } from '../shared/documents';
@@ -11,6 +11,12 @@ import BoardImage from './BoardImage';
 type Props = { state: AppState; api: DesktopAPI; update: (state: AppState) => void; toast: (text: string, undo?: () => void) => void; openTask: (id: string) => void; headingRef: RefObject<HTMLHeadingElement | null> };
 type Dialog = { kind: 'pick'; source: 'task' | 'note' } | { kind: 'source'; source: 'task' | 'note' } | { kind: 'edit'; card?: Card } | { kind: 'background' };
 type CardStyle = Pick<BoardCardValues, 'color' | 'textColor' | 'fontSize' | 'align' | 'imageFit'>;
+const textBackgrounds = [
+  { name: '浅黄', color: '#fff3bf' }, { name: '浅粉', color: '#ffe3e3' },
+  { name: '浅蓝', color: '#dbeafe' }, { name: '薄荷绿', color: '#d3f9d8' },
+  { name: '淡紫', color: '#e5dbff' }, { name: '杏橙', color: '#ffe8cc' },
+  { name: '浅灰', color: '#e9ecef' }, { name: '白色', color: '#ffffff' },
+];
 const viewKey = 'gtodo-board-view';
 function savedView(): { zoom: number; x: number; y: number } {
   try {
@@ -25,6 +31,9 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
   const [zoom, setZoom] = useState(initial.zoom);
   const zoomRef = useRef(zoom); zoomRef.current = zoom;
   const viewport = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLElement>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenBusy, setFullscreenBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [busy, setBusy] = useState(false); const busyRef = useRef(false);
@@ -40,6 +49,11 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
   };
   useLayoutEffect(() => { if (viewport.current) { viewport.current.scrollLeft = initial.x; viewport.current.scrollTop = initial.y; } }, [initial]);
   useEffect(() => saveView(), [zoom]);
+  useEffect(() => {
+    const change = () => setFullscreen(document.fullscreenElement === panel.current);
+    document.addEventListener('fullscreenchange', change); change();
+    return () => document.removeEventListener('fullscreenchange', change);
+  }, []);
   useEffect(() => registerMainDraft({ flush: async () => { await imageImport.current; } }), []);
   useEffect(() => { if (!cards.some(item => item.id === selectedId)) setSelectedId(null); }, [state.workspace.boardCards, selectedId]);
   async function command(value: Command) { const next = await api.command(value); update(next); return next; }
@@ -54,6 +68,15 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
       const operation = action(); imageImport.current = operation;
       try { await operation; } finally { imageImport.current = null; }
     });
+  }
+  async function toggleFullscreen() {
+    if (fullscreenBusy) return;
+    setFullscreenBusy(true);
+    try {
+      if (document.fullscreenElement === panel.current) await document.exitFullscreen();
+      else await panel.current?.requestFullscreen();
+    } catch { toast('无法切换看板全屏，请重试。'); }
+    finally { setFullscreenBusy(false); }
   }
   function placement(offset = 0, size = { width: 280, height: 220 }): BoardLayout {
     const area = viewport.current;
@@ -78,8 +101,11 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
   function open(card: Card) {
     const content = card.values.content;
     if ((content.kind === 'task' && !state.workspace.tasks.some(item => item.id === content.sourceId && !item.values.deleted)) || (content.kind === 'note' && !state.workspace.notes.some(item => item.id === content.sourceId && !item.values.deleted))) { toast('原内容已删除，可在回收站恢复。'); return; }
-    if (content.kind === 'task') openTask(content.sourceId);
-    else if (content.kind === 'note') void execute(() => api.noteWindow({ type: 'open', id: content.sourceId }));
+    if (content.kind === 'task' || content.kind === 'note') void execute(async () => {
+      if (document.fullscreenElement === panel.current) await document.exitFullscreen();
+      if (content.kind === 'task') openTask(content.sourceId);
+      else await api.noteWindow({ type: 'open', id: content.sourceId });
+    });
     else setDialog({ kind: 'edit', card });
   }
   async function remove(card: Card) {
@@ -126,8 +152,8 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
     if (!selected) return;
     await command({ type: 'board.card.layer', id: selected.id, front });
   }
-  return <section className="board-panel" aria-label="自由看板" onPaste={event => { if (dialog || busy || ['INPUT', 'TEXTAREA'].includes((event.target as HTMLElement).tagName)) return; const files = [...event.clipboardData.files]; if (files.length) { event.preventDefault(); void importImages(() => insertFiles(files)); } }}>
-    <header className="board-header"><div className="board-heading"><LayoutDashboard size={23} /><h1 ref={headingRef} tabIndex={-1}>我的看板</h1><span>{cards.length} 张贴纸</span></div>
+  return <section ref={panel} className="board-panel" aria-label="自由看板" onPaste={event => { if (dialog || busy || ['INPUT', 'TEXTAREA'].includes((event.target as HTMLElement).tagName)) return; const files = [...event.clipboardData.files]; if (files.length) { event.preventDefault(); void importImages(() => insertFiles(files)); } }}>
+    <header className="board-header"><div className="board-heading"><LayoutDashboard size={23} /><h1 ref={headingRef} tabIndex={-1}>我的看板</h1><span>{cards.length} 张贴纸</span><button className="button secondary board-fullscreen-button" aria-label={fullscreen ? '退出看板全屏' : '全屏看板'} title={fullscreen ? '退出全屏 (Esc)' : '全屏看板'} aria-pressed={fullscreen} disabled={fullscreenBusy} onClick={() => void toggleFullscreen()}>{fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}<span>{fullscreen ? '退出全屏' : '全屏'}</span></button></div>
       <div className="board-toolbar" aria-label="添加看板内容">
         <button className="button secondary" title="贴上任务" disabled={busy} onClick={() => setDialog({ kind: 'pick', source: 'task' })}><CheckCircle2 size={16} />任务</button>
         <button className="button secondary" title="贴上便签" disabled={busy} onClick={() => setDialog({ kind: 'pick', source: 'note' })}><StickyNote size={16} />便签</button>
@@ -143,7 +169,7 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
         <button className="icon-button" aria-label="置于顶层" title="置于顶层" disabled={busy} onClick={() => void execute(() => layer(true))}><ArrowUpToLine size={17} /></button>
         <button className="icon-button" aria-label="置于底层" title="置于底层" disabled={busy} onClick={() => void execute(() => layer(false))}><ArrowDownToLine size={17} /></button>
         <button className="icon-button" aria-label="从看板移除" title="从看板移除（可撤销）" disabled={busy} onClick={() => void execute(() => remove(selected))}><X size={17} /></button></>
-        : <span className="board-help">拖动顶部移动 · 右下角调整大小 · 空白处拖动浏览</span>}
+        : <span className="board-help">文字直接拖动、双击编辑 · 其他贴纸拖动顶部 · 空白处拖动浏览</span>}
       {busy && <span className="board-busy" role="status">处理中…</span>}
     </div>
     {state.folder.error && <div className="board-folder-warning" role="status">{state.folder.error}</div>}
@@ -217,7 +243,8 @@ function CardEditor({ card, busy, close, save }: { card?: Card; busy: boolean; c
   const [style, setStyle] = useState<CardStyle>(() => card ? { color: card.values.color, textColor: card.values.textColor, fontSize: card.values.fontSize, align: card.values.align as CardStyle['align'], imageFit: card.values.imageFit as CardStyle['imageFit'] } : { ...defaultCardStyle });
   return <Modal title={!card ? '添加文字 / 标语' : textCard ? '编辑文字 / 标语' : '贴纸样式'} close={close} busy={busy}><form className="board-form" onSubmit={event => { event.preventDefault(); if (textCard && !text.trim()) return; save(textCard ? { kind: 'text', text: text.trim() } : undefined, style); }}>
     {textCard && <label>文字内容<textarea autoFocus required maxLength={10000} rows={5} placeholder="写一句鼓励自己的话，或记下灵感…" value={text} disabled={busy} onChange={event => setText(event.target.value)} /></label>}
-    <div className="board-form-row"><label>贴纸颜色<input type="color" value={style.color} disabled={busy} onChange={event => setStyle(value => ({ ...value, color: event.target.value }))} /></label><label>文字颜色<input type="color" value={style.textColor} disabled={busy} onChange={event => setStyle(value => ({ ...value, textColor: event.target.value }))} /></label></div>
+    {textCard && <fieldset className="board-color-presets"><legend>背景预设</legend><div className="board-color-options">{textBackgrounds.map(option => <button key={option.color} type="button" aria-label={`${option.name}背景`} aria-pressed={style.color.toLowerCase() === option.color} disabled={busy} onClick={() => setStyle(value => ({ ...value, color: option.color }))}><span className="board-color-swatch" style={{ backgroundColor: option.color }}>{style.color.toLowerCase() === option.color && <Check size={16} />}</span><span>{option.name}</span></button>)}</div></fieldset>}
+    <div className="board-form-row"><label>{textCard ? '自定义背景' : '贴纸颜色'}<input type="color" value={style.color} disabled={busy} onChange={event => setStyle(value => ({ ...value, color: event.target.value }))} /></label><label>文字颜色<input type="color" value={style.textColor} disabled={busy} onChange={event => setStyle(value => ({ ...value, textColor: event.target.value }))} /></label></div>
     {textCard && <div className="board-form-row"><label>字号<input type="number" min={14} max={96} required value={style.fontSize} disabled={busy} onChange={event => setStyle(value => ({ ...value, fontSize: Number(event.target.value) }))} /></label><label>文字对齐<select value={style.align} disabled={busy} onChange={event => setStyle(value => ({ ...value, align: event.target.value as CardStyle['align'] }))}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label></div>}
     {card?.values.content.kind === 'image' && <label>图片显示<select value={style.imageFit} disabled={busy} onChange={event => setStyle(value => ({ ...value, imageFit: event.target.value as CardStyle['imageFit'] }))}><option value="contain">完整显示</option><option value="cover">填满卡片（可能裁切）</option></select></label>}
     <div className="form-footer"><button type="button" className="button secondary" disabled={busy} onClick={close}>取消</button><button className="button primary" disabled={busy || (textCard && !text.trim())}>{busy ? '保存中…' : card ? '保存修改' : '贴到看板'}</button></div>

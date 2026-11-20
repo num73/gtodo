@@ -78,7 +78,11 @@ export default function App() {
   const notify = useCallback((text: string, undo?: () => void) => setToast({ text, undo }), []);
   const closeToast = useCallback(() => setToast(null), []);
   async function withSavedDetails(action: () => void) {
-    try { await flushMainDrafts(); action(); }
+    try {
+      await flushMainDrafts();
+      if (document.fullscreenElement?.classList.contains('board-panel')) await document.exitFullscreen();
+      action();
+    }
     catch { notify('内容未能保存，请重试后再离开当前页面。'); }
   }
   function selectTask(id: string | null) {
@@ -163,7 +167,7 @@ export default function App() {
     void api!.setPaneLayout(paneLayoutRef.current).catch(() => notify('分栏宽度未能保存，请重试。'));
   }
   async function createDesktopNote(input?: import('./shared/documents').CreateNoteInput) {
-    try { await api!.createNote(input); setState(await api!.getState()); }
+    try { if (document.fullscreenElement?.classList.contains('board-panel')) await document.exitFullscreen(); await api!.createNote(input); setState(await api!.getState()); }
     catch (error) { notify((error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
   }
   async function createLinkedDesktopNote(taskId: string) {

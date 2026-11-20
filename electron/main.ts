@@ -227,8 +227,11 @@ function createWindow() {
 async function initialize() {
   await app.whenReady(); Menu.setApplicationMenu(null);
   startupMark('electronReadyMs');
-  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
+  const allowFullscreen = (contents: Electron.WebContents | null, permission: string, details: { isMainFrame: boolean; requestingUrl?: string }) =>
+    permission === 'fullscreen' && contents === window?.webContents && details.isMainFrame &&
+    (details.requestingUrl === 'gtodo://app/index.html' || !!devURL && details.requestingUrl === `${devURL}/`);
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(allowFullscreen(contents, permission, details)));
+  session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) => allowFullscreen(contents, permission, details));
   const root = path.join(app.getAppPath(), 'dist');
   protocol.handle('gtodo', async request => {
     const url = new URL(request.url);

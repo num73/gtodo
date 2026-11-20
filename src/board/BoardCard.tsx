@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
-import { ArrowUpRight, Check, GripHorizontal, MoveDiagonal2, StickyNote, Type, Image as ImageIcon, CheckCircle2 } from 'lucide-react';
+import { ArrowUpRight, Check, GripHorizontal, MoveDiagonal2, StickyNote, Image as ImageIcon, CheckCircle2 } from 'lucide-react';
 import { FieldDraft, registerMainDraft } from '../notes/draft';
 import { boardCardTitle, clampBoardLayout, resizeBoardLayout, type BoardCard as Card, type BoardLayout } from '../shared/board';
 import type { AppState, Command, Workspace } from '../shared/model';
@@ -29,21 +29,21 @@ export default function BoardCard({ card, workspace, zoom, selected, revision, c
   const note = content.kind === 'note' ? workspace.notes.find(item => item.id === content.sourceId && !item.values.deleted) : undefined;
   const missing = (content.kind === 'task' && !task) || (content.kind === 'note' && !note);
   const title = boardCardTitle(card, workspace);
-  const Icon = content.kind === 'task' ? CheckCircle2 : content.kind === 'note' ? StickyNote : content.kind === 'text' ? Type : ImageIcon;
+  const Icon = content.kind === 'task' ? CheckCircle2 : content.kind === 'note' ? StickyNote : ImageIcon;
   const kindName = { task: '任务', note: '便签', text: '文字', image: '图片' }[content.kind];
-  function start(event: PointerEvent<HTMLButtonElement>, resize: boolean) {
+  function start(event: PointerEvent<HTMLElement>, resize: boolean) {
     if (event.button !== 0) return;
     event.preventDefault(); event.stopPropagation(); select(); event.currentTarget.focus({ preventScroll: true });
     gesture.current = { x: event.clientX, y: event.clientY, layout, resize, next: layout };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
-  function move(event: PointerEvent<HTMLButtonElement>) {
+  function move(event: PointerEvent<HTMLElement>) {
     const start = gesture.current; if (!start) return;
     const dx = (event.clientX - start.x) / zoom, dy = (event.clientY - start.y) / zoom;
     start.next = start.resize ? resizeBoardLayout(start.layout, start.layout.width + dx, start.layout.height + dy) : clampBoardLayout({ ...start.layout, x: start.layout.x + dx, y: start.layout.y + dy });
     setPreview(start.next);
   }
-  function end(event: PointerEvent<HTMLButtonElement>, save: boolean) {
+  function end(event: PointerEvent<HTMLElement>, save: boolean) {
     if (!gesture.current) return;
     if (save) draft.change('layout', gesture.current.next);
     gesture.current = null; setPreview(null);
@@ -68,12 +68,14 @@ export default function BoardCard({ card, workspace, zoom, selected, revision, c
       else keyboard(event);
     }}>
     <span className="sr-only" id={`board-card-help-${card.id}`}>方向键移动，Shift 加方向键快速移动，Enter 打开，Delete 从看板移除。</span>
-    <header className="board-card-header">
+    {content.kind !== 'text' && <header className="board-card-header">
       <button className="board-drag-handle" aria-label={`移动${kindName}贴纸：${title}`} title="拖动移动；方向键微调，Shift 加速" onPointerDown={event => start(event, false)} onPointerMove={move} onPointerUp={event => end(event, true)} onPointerCancel={event => end(event, false)} onLostPointerCapture={event => end(event, false)} onKeyDown={event => keyboard(event)}><Icon size={14} /><span>{kindName}</span><GripHorizontal size={18} /></button>
-      {!missing && content.kind !== 'image' && <button className="board-card-open icon-button" aria-label={`打开${kindName}：${title}`} title={content.kind === 'text' ? '编辑文字' : `打开${kindName}`} onClick={open}><ArrowUpRight size={16} /></button>}
-    </header>
+      {!missing && content.kind !== 'image' && <button className="board-card-open icon-button" aria-label={`打开${kindName}：${title}`} title={`打开${kindName}`} onClick={open}><ArrowUpRight size={16} /></button>}
+    </header>}
     {content.kind === 'image' ? <div className="board-card-image"><BoardImage id={content.assetId} name={content.name || '图片'} fit={card.values.imageFit} revision={revision} /></div>
-      : content.kind === 'text' ? <div className="board-card-text" style={{ fontSize: card.values.fontSize, textAlign: card.values.align }} onDoubleClick={open}>{content.text}</div>
+      : content.kind === 'text' ? <div className="board-card-text" role="button" tabIndex={0} aria-label={`移动或编辑文字：${title}`} title="拖动移动，双击或按 Enter 编辑" style={{ fontSize: card.values.fontSize, textAlign: card.values.align }}
+        onPointerDown={event => start(event, false)} onPointerMove={move} onPointerUp={event => end(event, true)} onPointerCancel={event => end(event, false)} onLostPointerCapture={event => end(event, false)} onDoubleClick={open}
+        onKeyDown={event => { if (isComposing(event.nativeEvent)) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); open(); } else if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); event.stopPropagation(); remove(); } else keyboard(event); }}>{content.text}</div>
       : missing ? <div className="board-missing"><strong>{title}</strong><p>可在回收站恢复原内容，或移除此贴纸。</p></div>
       : <div className="board-card-body" onDoubleClick={open}>
         <div className="board-source-heading">{task && <button className={`board-complete ${task.values.completed ? 'checked' : ''}`} disabled={completing} aria-label={task.values.completed ? `标记未完成：${title}` : `完成任务：${title}`} aria-pressed={task.values.completed} onDoubleClick={event => event.stopPropagation()} onClick={async event => {

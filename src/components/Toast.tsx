@@ -12,11 +12,12 @@ export default function Toast({ message, close }: { message: ToastMessage; close
   const [bottom, setBottom] = useState(84);
   useLayoutEffect(() => {
     // A modal makes the rest of the document inert. Its feedback must live inside it.
-    const update = () => setHost([...document.querySelectorAll('dialog[open]')].at(-1) ?? document.body);
+    const update = () => setHost([...document.querySelectorAll('dialog[open]')].at(-1) ?? document.fullscreenElement ?? document.body);
     update();
+    document.addEventListener('fullscreenchange', update);
     const observer = new MutationObserver(update);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] });
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); document.removeEventListener('fullscreenchange', update); };
   }, []);
   useLayoutEffect(() => {
     setHovered(element.current?.matches(':hover') ?? false);
