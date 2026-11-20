@@ -21,9 +21,10 @@ import { paneLayoutSchema } from '../src/shared/layout';
 import { formatCountdown, phaseLabels, pomodoroCommandSchema, remainingTime } from '../src/shared/pomodoro';
 import { trashTargetSchema, trashTargetsSchema } from '../src/shared/trash';
 import { ScreenCapture } from './screen-capture';
+import { APP_USER_MODEL_ID, taskbarDetails } from './taskbar';
 
 app.setName('GTodo');
-app.setAppUserModelId('app.gtodo.desktop');
+app.setAppUserModelId(APP_USER_MODEL_ID);
 if (process.env.GTODO_DATA_DIR && !app.isPackaged) app.setPath('userData', path.resolve(process.env.GTODO_DATA_DIR));
 const diagnostics = new Diagnostics(app.getPath('userData'));
 const startupStages: Record<string, number> = {};
@@ -164,10 +165,15 @@ function createWindow() {
   const x = saved ? Math.max(area.x, Math.min(saved.x, area.x + area.width - width)) : Math.round(area.x + (area.width - width) / 2);
   const y = saved ? Math.max(area.y, Math.min(saved.y, area.y + area.height - height)) : Math.round(area.y + (area.height - height) / 2);
   window = new BrowserWindow({
-    width, height, x, y, minWidth: 360, minHeight: 400, resizable: true, frame: false, show: true,
+    width, height, x, y, minWidth: 360, minHeight: 400, resizable: true, frame: false, show: false,
     backgroundColor: '#ffffff', title: 'GTodo', icon: path.join(app.getAppPath(), 'assets/icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   });
+  const taskbar = taskbarDetails({ platform: process.platform, packaged: app.isPackaged,
+    executable: process.execPath, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE });
+  if (taskbar) window.setAppDetails(taskbar);
+  // Apply the identity and stable relaunch target before the first taskbar entry.
+  window.show();
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('did-fail-load', (_event, code, description) => console.error('Window load failed:', code, description));

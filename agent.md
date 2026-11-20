@@ -23,6 +23,7 @@
 | `src/shared/note-links.ts` | 任务备注与便签关联、解除关联和同步规则 |
 | `src/shared/documents.ts`、`layout.ts` | 文档与图片约定、分栏尺寸规则 |
 | `electron/main.ts`、`preload.ts` | 生命周期、IPC、应用协议、托盘、提醒与退出保存 |
+| `electron/taskbar.ts` | Windows 任务栏应用标识与 ZIP/便携版的固定启动入口 |
 | `electron/storage.ts`、`folder-storage.ts` | 本机缓存、原子写入、数据文件夹切换与合并 |
 | `electron/document-files.ts` | 正文文件、图片、外部编辑回读与冲突保留 |
 | `src/shared/trash.ts`、`src/components/RecycleBin.tsx`、`electron/trash-files.ts` | 回收站记录、确认与恢复界面、受限目录文件清理 |
@@ -51,6 +52,7 @@
 - 便签支持 12 种浅色配色，色板分两行显示。新增颜色时同步更新 `noteColors`、中文名称和便签样式，保留旧颜色 ID，并检查最小窗口下的显示和保存。
 - 便签和番茄钟是独立可移动、缩放、置顶的窗口；便签的 × 表示收起，不是删除。
 - 番茄钟由主进程计时，收起窗口后继续，退出应用或休眠时暂停；专注结束不自动完成任务。
+- 番茄钟内容根据可用宽高调整字号、控件和间距，宽横窗使用左右布局；保留 280 × 320 最小尺寸下的主要操作和设置滚动。使用 CSS 响应布局，不因调整窗口尺寸重新挂载计时或设置组件。
 - 设置页保留作者邮箱：`xlnum73@outlook.com`。
 
 ### 任务备注与关联便签
@@ -106,6 +108,8 @@
 | `npm.cmd test` | 执行 `tests/*.test.ts` |
 | `npm.cmd run test:notes` | 独立 Electron 窗口测试；先构建 |
 | `npm.cmd run test:capture` | 截图边界测试：系统默认显示设置及 100% / 150% / 200% 进程缩放；先构建 |
+| `npm.cmd run test:pomodoro-layout` | 真实番茄钟窗口尺寸、布局及计时/设置保留测试；先构建 |
+| `npm.cmd run test:taskbar` | Windows 原生任务栏属性与独立快捷方式测试，不改用户固定项 |
 | `npm.cmd run test:outlook` | 经典 Outlook 本地 PST 集成测试；先构建 |
 | `npm.cmd run bench:startup -- . 500 3` | 独立合成数据启动基准；500 张便签、3 次运行；先构建 |
 | `npm.cmd run pack` | 构建 Windows 未封装目录 |
@@ -126,6 +130,8 @@
 - `GTODO_DATA_DIR` 仅在未打包模式生效；不能靠它隔离便携 EXE。不要使用个人任务目录执行删除或故障注入测试。
 - `test:outlook` 需要已配置的经典 Outlook，会临时挂载 `.qa` 下的独立 PST 并在结束时解除挂载。不要改成使用个人日历做增删测试。
 - UI 修改检查主窗口宽窄布局、缩放、便签小窗口和编辑保存。只关闭本次测试启动的进程；优先正常退出并等待保存。
+- 番茄钟布局修改后运行 `test:pomodoro-layout`，验证 280 × 320、默认尺寸、宽横窗、窄竖窗及大窗口；检查最长计时文字不截断、主要控件无需横向滚动、设置可滚动保存，以及运行中计时和未保存草稿跨布局保留。
+- 任务栏集成修改后运行 `tests/taskbar.test.ts` 与 `test:taskbar`，核对进程、窗口和快捷方式使用同一标识，便携包指向外层 EXE，含空格的路径正确加引号。原生属性测试不是用户任务栏分组的 UI 实测，不将其描述为已经自动修复旧固定项。
 - README 功能截图使用高分辨率渲染后直接导出的无损 PNG，保留原始像素，不转 JPEG、不缩小图片文件；页面通过布局控制展示宽度，并链接原图。
 - `.qa`、`dist`、`dist-electron`、`release`、`node_modules` 和日志是本地产物，不加入源代码提交。
 
@@ -138,6 +144,7 @@
 - 截图使用独立沙箱分区、固定 100% 缩放与最小 preload，仅接受当前截图窗口的主 frame 和指定本地 HTML；主应用不能调用截图窗口专用 IPC。主进程按原图实际像素裁剪并限制 10 MB，启动与选择均有超时。构建和 ASAR 须包含 `capture.html`、`capture-renderer.js`、`capture-preload.cjs`。
 - Windows 截图窗口需 `thickFrame: false`，显示前重新应用对应显示器的完整 `bounds` 并提升窗口层级。默认系统边框可能使声明为全屏的窗口仍受工作区限制，造成截图缩放和双任务栏；不要替换为 `workArea` 或仅依赖 `fullscreen: true`。
 - 当前 electron-builder 配置 `portable.unpackDirName: true` 用于独立临时解压目录，防止重复启动清理另一实例资源。升级依赖时核对实际行为。
+- 任务栏 ID 保持 `app.gtodo.desktop`，与 `build.appId` 一致且不带版本号。打包版主窗口首次显示前调用 `setAppDetails`，同时提供 relaunchCommand、relaunchDisplayName 和稳定图标路径。便携版使用 electron-builder 提供的 `PORTABLE_EXECUTABLE_FILE`，不能使用临时目录里的 `process.execPath` 作为固定入口；ZIP 使用自身 EXE。不要修改用户固定项、任务栏缓存或注册表。升级说明提示从运行图标重新固定旧入口。依据：[Microsoft AppUserModelID](https://learn.microsoft.com/en-us/windows/win32/shell/appids)、[Electron setAppDetails](https://www.electronjs.org/docs/latest/api/base-window#winsetappdetailsoptions-windows)。
 - 单文件便携 EXE 每次都会解压运行环境；优先提供完整解压一次的 ZIP 版，不以固定共享临时目录换取速度。
 - 主窗口先读本机缓存，文件夹首次合并在窗口创建后运行；编辑仍进入 FolderStorage 串行队列。日历启用、手动同步及后台同步要等待首次读取；退出等待启动窗口恢复完成后再统一保存草稿。
 - Markdown 预览与代码高亮按需导入。发布包排除 `node_modules` 和主进程 source map：依赖已由 Vite/esbuild 打包；以后新增外部运行时依赖时须同步调整打包规则并验证 ASAR，不能盲目排除。

@@ -15,6 +15,8 @@
     "test": "tsx --test tests/*.test.ts",
     "test:notes": "node scripts/test-notes-native.mjs",
     "test:capture": "node scripts/test-screen-capture-native.mjs",
+    "test:pomodoro-layout": "node scripts/test-pomodoro-layout.mjs",
+    "test:taskbar": "node scripts/test-taskbar-native.mjs",
     "test:outlook": "tsx scripts/test-outlook-native.ts",
     "bench:startup": "node scripts/benchmark-startup.mjs",
     "pack": "npm run build && electron-builder --win --dir",
