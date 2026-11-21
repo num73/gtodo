@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-export const documentFormatSchema = z.enum(['text', 'markdown']);
+// Plain text is already valid Markdown; old flags require no content conversion.
+export const documentFormatSchema = z.enum(['text', 'markdown']).transform(() => 'markdown' as const);
 export type DocumentFormat = z.infer<typeof documentFormatSchema>;
 export const assetIdSchema = z.string().regex(/^[a-f0-9]{64}\.(png|jpg|gif|webp)$/);
 export function isAssetPath(value: string): boolean {
@@ -22,7 +23,7 @@ export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export function documentParts(target: DocumentTarget) {
   return ['documents', target.kind === 'task' ? 'tasks' : 'notes', `${target.kind}-${encodeURIComponent(target.id).replaceAll('.', '%2E')}`];
 }
-export function documentFileName(format: DocumentFormat) { return format === 'markdown' ? 'note.md' : 'note.txt'; }
+export function documentFileName(_format: DocumentFormat = 'markdown') { return 'note.md'; }
 export function assetURL(target: DocumentTarget, relative: string, assetId?: string) {
   if (!isAssetPath(relative)) return '';
   return `gtodo://app/media/${target.kind}/${encodeURIComponent(target.id)}/${encodeURIComponent(relative.slice(7))}?v=${assetId ?? ''}`;

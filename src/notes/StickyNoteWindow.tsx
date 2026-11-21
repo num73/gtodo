@@ -4,6 +4,7 @@ import { noteColors, noteColorNames, type AppState, type DesktopAPI, type Note }
 import { flushMainDrafts, NoteDraft } from './draft';
 import DocumentEditor from '../components/DocumentEditor';
 import { linkedTaskForNote } from '../shared/note-links';
+import { isDesktopNote, isNotebookNote } from '../shared/notebook';
 import { isComposing } from '../components/keyboard';
 
 export default function StickyNoteWindow({ id }: { id: string }) {
@@ -38,6 +39,7 @@ export function NoteEditor({ note, state, api }: { note: Note; state: AppState; 
   const toolsRef = useRef<HTMLDivElement>(null);
   const toolsButton = useRef<HTMLButtonElement>(null);
   const pinned = state.noteWindows[note.id]?.pinned ?? false;
+  const removed = !isDesktopNote(note);
   const linkedTask = linkedTaskForNote(state.workspace, note);
   useEffect(() => { draft.receive(note.values); }, [draft, note.values]);
   useEffect(() => () => draft.dispose(), [draft]);
@@ -72,20 +74,22 @@ export function NoteEditor({ note, state, api }: { note: Note; state: AppState; 
       </div>
     </header>
     {toolsOpen && <div id="sticky-edit-options" ref={toolsRef} className="sticky-tools-popover" role="dialog" aria-label="便签编辑选项">
-      <div className="sticky-palette" role="group" aria-label="便签颜色">{noteColors.map(color => <button key={color} aria-label={`${noteColorNames[color]}便签`} title={noteColorNames[color]} aria-pressed={snapshot.values.color === color} className={`sticky-color sticky-${color}`} disabled={note.values.deleted} onClick={() => draft.change('color', color)}>{snapshot.values.color === color && <Check size={14} />}</button>)}</div>
+      <div className="sticky-palette" role="group" aria-label="便签颜色">{noteColors.map(color => <button key={color} aria-label={`${noteColorNames[color]}便签`} title={noteColorNames[color]} aria-pressed={snapshot.values.color === color} className={`sticky-color sticky-${color}`} disabled={removed} onClick={() => draft.change('color', color)}>{snapshot.values.color === color && <Check size={14} />}</button>)}</div>
       <div ref={setToolbarTarget} />
       <div className="sticky-menu-actions">
+        <button disabled={busy || removed} onClick={() => void execute(async () => { if (!isNotebookNote(note)) await api.command({ type: 'note.notebook', id: note.id, mode: 'link' }); await api.showNotebook(note.id); setToolsOpen(false); }, true)}><Link2 size={15} />{isNotebookNote(note) ? '打开关联笔记' : '加入笔记并关联'}</button>
+        <button disabled={busy || removed} onClick={() => void execute(async () => { await api.command({ type: 'note.notebook', id: note.id, mode: 'convert' }); }, true)}><ArrowUpRight size={15} />转为笔记</button>
         <button disabled={busy} onClick={() => void execute(async () => { await api.createNote(); setToolsOpen(false); })}><Plus size={15} />新建便签</button>
         <button onClick={() => void execute(async () => { await api.showMain(); setToolsOpen(false); })}><ArrowUpRight size={15} />打开 GTodo</button>
-        <button disabled={busy || note.values.deleted} onClick={() => setConfirmDelete(true)}><Trash2 size={15} />删除便签</button>
+        <button disabled={busy || removed} onClick={() => setConfirmDelete(true)}><Trash2 size={15} />删除便签</button>
       </div>
-      {confirmDelete && <div className="sticky-delete-confirm"><span>{linkedTask ? '删除便签并解除关联？任务备注将保留。' : '删除这张便签？'}</span><button disabled={busy} onClick={() => setConfirmDelete(false)}>取消</button><button className="danger-text" disabled={busy} onClick={() => void execute(() => api.deleteNote(note.id))}>删除</button></div>}
+      {confirmDelete && <div className="sticky-delete-confirm"><span>{isNotebookNote(note) ? '只移除便签入口，关联笔记和正文仍保留。' : linkedTask ? '删除便签并解除关联？任务备注将保留。' : '删除这张便签？'}</span><button disabled={busy} onClick={() => setConfirmDelete(false)}>取消</button><button className="danger-text" disabled={busy} onClick={() => void execute(() => api.deleteNote(note.id))}>删除</button></div>}
     </div>}
-    {note.values.deleted && <div className="sticky-message" role="status"><span>这张便签已被删除，当前文字仍保留。</span><button onClick={() => void execute(() => api.command({ type: 'note.update', id: note.id, patch: { deleted: false } }))}>恢复便签</button></div>}
-    <input className="sticky-title" aria-label="便签标题" placeholder="便签标题" maxLength={200} value={snapshot.values.title} disabled={note.values.deleted} onChange={event => draft.change('title', event.target.value)} onBlur={() => void draft.flush().catch(() => {})} />
-    <DocumentEditor target={{ kind: 'note', id: note.id }} label="便签内容" value={snapshot.values.content} format={snapshot.values.format} assets={note.values.assets} sticky disabled={note.values.deleted}
+    {removed && <div className="sticky-message" role="status"><span>这张便签已被删除，当前文字仍保留。</span><button onClick={() => void execute(() => api.command({ type: 'note.desktop', id: note.id }))}>恢复便签</button></div>}
+    <input className="sticky-title" aria-label="便签标题" placeholder="便签标题" maxLength={200} value={snapshot.values.title} disabled={removed} onChange={event => draft.change('title', event.target.value)} onBlur={() => void draft.flush().catch(() => {})} />
+    <DocumentEditor target={{ kind: 'note', id: note.id }} label="便签内容" value={snapshot.values.content} assets={note.values.assets} sticky disabled={removed}
       collapsedToolbar toolbarTarget={toolsOpen ? toolbarTarget : null} onToolbarAction={() => setToolsOpen(false)}
-      onChange={value => draft.change('content', value)} onFormatChange={async format => { draft.change('format', format); await draft.flush(); }} onSave={() => draft.flush()} />
+      onChange={value => draft.change('content', value)} onSave={() => draft.flush()} />
     {(error || snapshot.error) && <div className="sticky-message sticky-error" role="alert"><span>{error || snapshot.error}</span><button disabled={busy} onClick={() => void execute(() => draft.flush())}><RotateCcw size={13} />重试保存</button></div>}
     {state.folder.error && <div className="sticky-folder-warning">已保存在本机；数据文件夹暂不可用。</div>}
     {state.folder.notice && <div className="sticky-folder-warning">{state.folder.notice}</div>}

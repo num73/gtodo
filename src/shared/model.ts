@@ -14,7 +14,7 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
 const nullableDate = date.nullable();
 export const clockSchema = z.object({ tick: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1000000), device: id });
 export type Clock = z.infer<typeof clockSchema>;
-export const recordKindSchema = z.enum(['task', 'note', 'list', 'step', 'boardCard']);
+export const recordKindSchema = z.enum(['task', 'note', 'list', 'step', 'boardCard', 'noteFolder']);
 export const purgedRecordSchema = z.object({ kind: recordKindSchema, id, clock: clockSchema });
 export type PurgedRecord = z.infer<typeof purgedRecordSchema>;
 const noteLinkSchema = z.object({ noteId: id, taskLife: clockSchema, noteLife: clockSchema, detached: z.object({ side: z.enum(['task', 'note']), clock: clockSchema }).optional() }).nullable();
@@ -24,7 +24,7 @@ export const listValuesSchema = z.object({
 });
 export const taskValuesSchema = z.object({
   title, listId: id, notes: z.string().max(100000), important: z.boolean(), completed: z.boolean(),
-  notesFormat: documentFormatSchema.default('text'), notesAssets: assetMapSchema.default({}),
+  notesFormat: documentFormatSchema.default('markdown'), notesAssets: assetMapSchema.default({}),
   noteLink: noteLinkSchema.default(null),
   myDay: nullableDate, dueDate: nullableDate, reminder: z.string().datetime().nullable(),
   repeat: z.enum(['none', 'daily', 'weekly', 'monthly']),
@@ -38,9 +38,14 @@ export const noteColorNames = {
 } satisfies Record<typeof noteColors[number], string>;
 export const noteValuesSchema = z.object({
   title: z.string().max(200), content: z.string().max(100000), color: z.enum(noteColors),
-  format: documentFormatSchema.default('text'), assets: assetMapSchema.default({}),
+  format: documentFormatSchema.default('markdown'), assets: assetMapSchema.default({}),
   createdAt: z.string().datetime(), deleted: z.boolean(),
+  desktop: z.enum(['visible', 'removed', 'none']).default('visible'),
+  notebook: z.enum(['visible', 'removed', 'none']).default('none'),
+  folderId: id.nullable().default(null),
 });
+export const noteFolderValuesSchema = z.object({ name: z.string().trim().min(1).max(100), parentId: id.nullable(), deleted: z.boolean(), createdAt: z.string().datetime() });
+export type NoteFolder = RecordItem<z.infer<typeof noteFolderValuesSchema>>;
 export type NoteValues = z.infer<typeof noteValuesSchema>;
 export type NotePatch = Partial<Pick<NoteValues, 'title' | 'content' | 'color' | 'format'>>;
 export type Note = RecordItem<NoteValues>;
@@ -54,7 +59,7 @@ export type Step = RecordItem<StepValues>;
 
 function recordSchema<T extends z.ZodRawShape>(values: z.ZodObject<T>) {
   const shape = Object.fromEntries(Object.keys(values.shape).map(key => [key,
-    ['notesFormat', 'notesAssets', 'format', 'assets', 'noteLink'].includes(key) ? clockSchema.default({ tick: 0, device: 'legacy' }) : clockSchema]));
+    ['notesFormat', 'notesAssets', 'format', 'assets', 'noteLink', 'desktop', 'notebook', 'folderId', 'size'].includes(key) ? clockSchema.default({ tick: 0, device: 'legacy' }) : clockSchema]));
   return z.object({ id, values, clocks: z.object(shape) });
 }
 export const workspaceSchema = z.object({
@@ -62,21 +67,26 @@ export const workspaceSchema = z.object({
   lists: z.array(recordSchema(listValuesSchema)).max(5000),
   tasks: z.array(recordSchema(taskValuesSchema)).max(100000),
   steps: z.array(recordSchema(stepValuesSchema)).max(200000),
-  notes: z.array(recordSchema(noteValuesSchema)).max(10000).default([]),
+  notes: z.array(z.preprocess(input => {
+    const record = input as { values?: Record<string, unknown>; clocks?: Record<string, unknown> } | null;
+    if (!record?.values || record.values.desktop !== undefined) return input;
+    return { ...record, values: { ...record.values, desktop: record.values.deleted ? 'removed' : 'visible' }, clocks: { ...record.clocks, desktop: record.clocks?.deleted } };
+  }, recordSchema(noteValuesSchema))).max(10000).default([]),
+  noteFolders: z.array(recordSchema(noteFolderValuesSchema)).max(5000).default([]),
   boards: z.array(recordSchema(boardValuesSchema)).max(1).default([]),
   boardCards: z.array(recordSchema(boardCardValuesSchema)).max(5000).default([]),
   purged: z.array(purgedRecordSchema).max(400000).default([]),
 }).superRefine((value, ctx) => {
-  for (const key of ['lists', 'tasks', 'steps', 'notes', 'boards', 'boardCards'] as const) {
+  for (const key of ['lists', 'tasks', 'steps', 'notes', 'noteFolders', 'boards', 'boardCards'] as const) {
     if (new Set(value[key].map(item => item.id)).size !== value[key].length) {
       ctx.addIssue({ code: 'custom', message: `${key} 中有重复标识` });
     }
   }
   if (value.boards.some(item => item.id !== 'main')) ctx.addIssue({ code: 'custom', message: '看板标识无效' });
 });
-export interface Workspace { schemaVersion: 1; lists: TaskList[]; tasks: Task[]; steps: Step[]; notes: Note[]; boards: Board[]; boardCards: BoardCard[]; purged: PurgedRecord[] }
+export interface Workspace { schemaVersion: 1; lists: TaskList[]; tasks: Task[]; steps: Step[]; notes: Note[]; noteFolders: NoteFolder[]; boards: Board[]; boardCards: BoardCard[]; purged: PurgedRecord[] }
 export function parseWorkspace(value: unknown): Workspace { return workspaceSchema.parse(value) as Workspace; }
-export function emptyWorkspace(): Workspace { return { schemaVersion: 1, lists: [], tasks: [], steps: [], notes: [], boards: [], boardCards: [], purged: [] }; }
+export function emptyWorkspace(): Workspace { return { schemaVersion: 1, lists: [], tasks: [], steps: [], notes: [], noteFolders: [], boards: [], boardCards: [], purged: [] }; }
 export function localDate(value = new Date()): string {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 }
@@ -91,7 +101,7 @@ export function nextDate(value: string, repeat: TaskValues['repeat']): string {
   return localDate(day);
 }
 export const commandSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('board.update'), patch: boardValuesSchema.partial() }),
+  z.object({ type: z.literal('board.update'), patch: boardValuesSchema.omit({ size: true }).partial().extend({ size: boardValuesSchema.shape.size.unwrap().optional() }) }),
   z.object({ type: z.literal('board.card.add'), content: boardContentSchema, layout: boardLayoutSchema.optional(), style: boardCardValuesSchema.pick({ color: true, textColor: true, fontSize: true, align: true, imageFit: true }).partial().optional() }),
   z.object({ type: z.literal('board.source.add'), kind: z.enum(['task', 'note']), title: z.string().trim().max(200), content: z.string().max(100000), layout: boardLayoutSchema.optional(), noteColor: z.enum(noteColors).optional() }),
   z.object({ type: z.literal('board.card.update'), id, patch: boardCardPatchSchema }),
@@ -104,12 +114,19 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('step.add'), taskId: id, title }),
   z.object({ type: z.literal('step.update'), id, patch: stepValuesSchema.pick({ title: true, completed: true, deleted: true }).partial() }),
   z.object({ type: z.literal('note.add'), title: z.string().max(200).optional(), content: z.string().max(100000).optional(), color: z.enum(noteColors).optional(), format: documentFormatSchema.optional(), assets: assetMapSchema.optional() }),
-  z.object({ type: z.literal('note.update'), id, patch: noteValuesSchema.omit({ createdAt: true, format: true, assets: true }).partial().extend({ format: documentFormatSchema.optional(), assets: assetMapSchema.optional() }) }),
+  z.object({ type: z.literal('note.update'), id, patch: noteValuesSchema.omit({ createdAt: true, format: true, assets: true, desktop: true, notebook: true, folderId: true }).partial().extend({ format: documentFormatSchema.optional(), assets: assetMapSchema.optional() }) }),
+  z.object({ type: z.literal('notebook.add'), title: z.string().max(200).optional(), folderId: id.nullable().optional() }),
+  z.object({ type: z.literal('note.notebook'), id, mode: z.enum(['link', 'convert']), folderId: id.nullable().optional() }),
+  z.object({ type: z.literal('note.desktop'), id }),
+  z.object({ type: z.literal('notebook.remove'), id }),
+  z.object({ type: z.literal('notebook.move'), id, folderId: id.nullable() }),
+  z.object({ type: z.literal('noteFolder.add'), name: z.string().trim().min(1).max(100), parentId: id.nullable() }),
+  z.object({ type: z.literal('noteFolder.update'), id, patch: noteFolderValuesSchema.omit({ createdAt: true }).partial() }),
 ]);
 export type Command = z.infer<typeof commandSchema>;
 export interface FolderStatus { error: string | null; lastRead: string | null; notice?: string | null }
 export interface NoteWindowSettings { open: boolean; pinned: boolean; bounds?: { x: number; y: number; width: number; height: number } }
-export interface AppState { workspace: Workspace; deviceId: string; dataPath: string; notice: string | null; folder: FolderStatus; zoom: number; version: string; mainWindow: { maximized: boolean; fullScreen: boolean }; paneLayout: PaneLayout; preferences: UserPreferences; pomodoroWindow: NoteWindowSettings; noteWindows: Record<string, NoteWindowSettings>; outlook: OutlookStatus }
+export interface AppState { workspace: Workspace; deviceId: string; dataPath: string; notice: string | null; folder: FolderStatus; zoom: number; version: string; mainWindow: { maximized: boolean; fullScreen: boolean }; paneLayout: PaneLayout; preferences: UserPreferences; pomodoroWindow: NoteWindowSettings; noteWindows: Record<string, NoteWindowSettings>; outlook: OutlookStatus; notebookRequest?: { id: string; nonce: string }; gitEnabled?: boolean }
 export const noteWindowActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('open'), id }), z.object({ type: z.literal('hide'), id }),
   z.object({ type: z.literal('pin'), id, pinned: z.boolean() }),
@@ -124,6 +141,9 @@ export function nextZoom(current: number, action: ZoomAction): number {
   return zoomSteps.includes(action as typeof zoomSteps[number]) ? action : current;
 }
 export interface DesktopAPI {
+  getGitStatus(): Promise<import('./git').GitStatus>;
+  configureGit(input: import('./git').GitConfigure): Promise<import('./git').GitStatus>;
+  gitAction(input: import('./git').GitAction): Promise<import('./git').GitStatus>;
   getPomodoro(): Promise<import('./pomodoro').PomodoroSnapshot>;
   pomodoroCommand(command: import('./pomodoro').PomodoroCommand): Promise<import('./pomodoro').PomodoroSnapshot>;
   onPomodoro(callback: (state: import('./pomodoro').PomodoroSnapshot) => void): () => void;
@@ -157,6 +177,7 @@ export interface DesktopAPI {
   noteWindow(action: NoteWindowAction): Promise<void>;
   deleteNote(id: string): Promise<AppState>;
   showMain(): Promise<void>;
+  showNotebook(id: string): Promise<void>;
   quit(): void;
   onNoteFlush(callback: (requestId: string) => void): () => void;
   noteFlushed(requestId: string, success: boolean): Promise<void>;

@@ -1,6 +1,7 @@
 import { emptyWorkspace, localDate, nextDate, type Clock, type Command, type RecordItem, type Workspace, type TaskValues, type PurgedRecord } from './model';
 import { compareClock, linkedNoteForTask, linkedTaskForNote, synchronizeLinkedNotes } from './note-links';
-import { BOARD_ID, defaultBoard, defaultCardStyle, type Board } from './board';
+import { BOARD_ID, boardSize, clampBoardLayout, defaultBoard, defaultCardStyle, type Board } from './board';
+import { normalizeNoteViews } from './notebook';
 
 export { compareClock } from './note-links';
 function mergePurged(a: PurgedRecord[], b: PurgedRecord[]) {
@@ -15,6 +16,7 @@ function removePurged(workspace: Workspace) {
   const ids = new Set(workspace.purged.map(item => `${item.kind}:${item.id}`));
   workspace.tasks = workspace.tasks.filter(item => !ids.has(`task:${item.id}`));
   workspace.notes = workspace.notes.filter(item => !ids.has(`note:${item.id}`));
+  workspace.noteFolders = (workspace.noteFolders ?? []).filter(item => !ids.has(`noteFolder:${item.id}`));
   workspace.boardCards = (workspace.boardCards ?? []).filter(item => !ids.has(`boardCard:${item.id}`));
   workspace.lists = workspace.lists.filter(item => !ids.has(`list:${item.id}`));
   workspace.steps = workspace.steps.filter(item => !ids.has(`step:${item.id}`) && !ids.has(`task:${item.values.taskId}`));
@@ -39,15 +41,15 @@ function mergeRecords<T extends object>(a: RecordItem<T>[], b: RecordItem<T>[]):
   return [...result.values()].sort((x, y) => x.id.localeCompare(y.id, 'en'));
 }
 export function mergeWorkspaces(a: Workspace, b: Workspace): Workspace {
-  return synchronizeLinkedNotes(removePurged({ schemaVersion: 1, lists: mergeRecords(a.lists, b.lists), tasks: mergeRecords(a.tasks, b.tasks), steps: mergeRecords(a.steps, b.steps), notes: mergeRecords(a.notes, b.notes), boards: mergeRecords(a.boards ?? [], b.boards ?? []), boardCards: mergeRecords(a.boardCards ?? [], b.boardCards ?? []), purged: mergePurged(a.purged ?? [], b.purged ?? []) }));
+  return synchronizeLinkedNotes(normalizeNoteViews(removePurged({ schemaVersion: 1, lists: mergeRecords(a.lists, b.lists), tasks: mergeRecords(a.tasks, b.tasks), steps: mergeRecords(a.steps, b.steps), notes: mergeRecords(a.notes, b.notes), noteFolders: mergeRecords(a.noteFolders ?? [], b.noteFolders ?? []), boards: mergeRecords(a.boards ?? [], b.boards ?? []), boardCards: mergeRecords(a.boardCards ?? [], b.boardCards ?? []), purged: mergePurged(a.purged ?? [], b.purged ?? []) })));
 }
 export class WorkspaceEngine {
   state: Workspace;
   private tick = 0;
-  constructor(readonly deviceId: string, state = emptyWorkspace()) { this.state = synchronizeLinkedNotes(removePurged({ ...emptyWorkspace(), ...structuredClone(state), purged: mergePurged(state.purged ?? [], []) })); this.observe(); }
+  constructor(readonly deviceId: string, state = emptyWorkspace()) { this.state = synchronizeLinkedNotes(normalizeNoteViews(removePurged({ ...emptyWorkspace(), ...structuredClone(state), purged: mergePurged(state.purged ?? [], []) }))); this.observe(); }
   private observe() {
     for (const marker of this.state.purged) this.tick = Math.max(this.tick, marker.clock.tick);
-    for (const collection of [this.state.lists, this.state.tasks, this.state.steps, this.state.notes, this.state.boards, this.state.boardCards]) {
+    for (const collection of [this.state.lists, this.state.tasks, this.state.steps, this.state.notes, this.state.noteFolders, this.state.boards, this.state.boardCards]) {
       for (const item of collection) for (const clock of Object.values(item.clocks) as Clock[]) this.tick = Math.max(this.tick, clock.tick);
     }
   }
@@ -65,7 +67,7 @@ export class WorkspaceEngine {
   }
   merge(remote: Workspace) { this.state = mergeWorkspaces(this.state, remote); this.observe(); }
   private deletedRecord(target: PurgedRecord) {
-    const collection = target.kind === 'task' ? this.state.tasks : target.kind === 'note' ? this.state.notes : target.kind === 'list' ? this.state.lists : target.kind === 'boardCard' ? this.state.boardCards : this.state.steps;
+    const collection = target.kind === 'task' ? this.state.tasks : target.kind === 'note' ? this.state.notes : target.kind === 'list' ? this.state.lists : target.kind === 'noteFolder' ? this.state.noteFolders : target.kind === 'boardCard' ? this.state.boardCards : this.state.steps;
     const item = collection.find(item => item.id === target.id);
     if (!item?.values.deleted || compareClock(item.clocks.deleted, target.clock) !== 0) throw new Error('回收站内容已变化，请刷新后重试。');
     return item;
@@ -82,6 +84,7 @@ export class WorkspaceEngine {
       this.apply({ type: 'step.update', id: target.id, patch: { deleted: false } });
     } else if (target.kind === 'boardCard') this.apply({ type: 'board.card.update', id: target.id, patch: { deleted: false } });
     else if (target.kind === 'note') this.apply({ type: 'note.update', id: target.id, patch: { deleted: false } });
+    else if (target.kind === 'noteFolder') this.apply({ type: 'noteFolder.update', id: target.id, patch: { deleted: false } });
     else this.apply({ type: 'list.update', id: target.id, patch: { deleted: false } });
   }
   purge(targets: PurgedRecord[]) {
@@ -98,10 +101,15 @@ export class WorkspaceEngine {
       case 'board.update': {
         let board = this.state.boards.find(item => item.id === BOARD_ID);
         if (!board) {
-          board = { id: BOARD_ID, values: { ...defaultBoard }, clocks: Object.fromEntries(Object.keys(defaultBoard).map(key => [key, { tick: 0, device: 'legacy' }])) as Board['clocks'] };
+          board = { id: BOARD_ID, values: { ...defaultBoard, size: boardSize(this.state) }, clocks: Object.fromEntries(Object.keys(defaultBoard).map(key => [key, { tick: 0, device: 'legacy' }])) as Board['clocks'] };
           this.state.boards.push(board);
         }
-        this.patch(board, command.patch); break;
+        this.patch(board, command.patch);
+        if (command.patch.size) for (const card of this.state.boardCards) {
+          const layout = clampBoardLayout(card.values.layout, command.patch.size);
+          if (JSON.stringify(layout) !== JSON.stringify(card.values.layout)) this.patch(card, { layout });
+        }
+        break;
       }
       case 'board.card.add': {
         const content = command.content;
@@ -109,7 +117,7 @@ export class WorkspaceEngine {
         if (content.kind === 'note' && !this.state.notes.some(item => item.id === content.sourceId && !item.values.deleted)) throw new Error('便签已删除，请重新选择。');
         if (this.state.boardCards.length >= 5000) throw new Error('看板贴纸已达上限，请先清理回收站。');
         this.state.boardCards.push(this.record(crypto.randomUUID(), {
-          content, layout: command.layout ?? { x: 40, y: 40, width: 280, height: 220 },
+          content, layout: clampBoardLayout(command.layout ?? { x: 40, y: 40, width: 280, height: 220 }, boardSize(this.state)),
           z: Math.min(1e12, Math.max(0, ...this.state.boardCards.map(item => item.values.z)) + 1), ...defaultCardStyle,
           color: content.kind === 'task' || content.kind === 'image' ? '#ffffff' : defaultCardStyle.color,
           ...command.style,
@@ -128,7 +136,7 @@ export class WorkspaceEngine {
       case 'board.card.update': {
         const card = this.state.boardCards.find(item => item.id === command.id);
         if (command.patch.content && card?.values.content.kind !== 'text') throw new Error('请打开原任务或便签编辑内容。');
-        this.patch(card, command.patch); break;
+        this.patch(card, { ...command.patch, ...(command.patch.layout ? { layout: clampBoardLayout(command.patch.layout, boardSize(this.state)) } : {}) }); break;
       }
       case 'board.card.layer': {
         const cards = this.state.boardCards.filter(item => !item.values.deleted).sort((a, b) => a.values.z - b.values.z || a.id.localeCompare(b.id));
@@ -149,7 +157,7 @@ export class WorkspaceEngine {
         const taskId = crypto.randomUUID();
         this.ensureList(command.listId);
         this.state.tasks.push(this.record<TaskValues>(taskId, {
-          title: command.title, listId: command.listId, notes: '', notesFormat: 'text', notesAssets: {}, noteLink: null, important: command.important ?? false,
+          title: command.title, listId: command.listId, notes: '', notesFormat: 'markdown', notesAssets: {}, noteLink: null, important: command.important ?? false,
           completed: false, myDay: command.myDay ?? null, dueDate: command.dueDate ?? null,
           reminder: null, repeat: 'none', seriesId: taskId, createdAt: now, completedAt: null, deleted: false,
         })); break;
@@ -174,8 +182,9 @@ export class WorkspaceEngine {
       case 'task.link-note': {
         const task = this.state.tasks.find(item => item.id === command.id && !item.values.deleted);
         if (!task) throw new Error('任务不存在。');
-        if (linkedNoteForTask(this.state, task)) break;
-        const note = this.record(crypto.randomUUID(), { title: task.values.title.slice(0, 200), content: task.values.notes, color: command.noteColor ?? 'yellow', format: task.values.notesFormat, assets: structuredClone(task.values.notesAssets), createdAt: now, deleted: false });
+        const linked = linkedNoteForTask(this.state, task);
+        if (linked) { this.patch(linked, { desktop: 'visible' }); break; }
+        const note = this.record(crypto.randomUUID(), { title: task.values.title.slice(0, 200), content: task.values.notes, color: command.noteColor ?? 'yellow', format: task.values.notesFormat, assets: structuredClone(task.values.notesAssets), createdAt: now, deleted: false, desktop: 'visible' as const, notebook: 'none' as const, folderId: null });
         note.clocks.content = { ...task.clocks.notes }; note.clocks.format = { ...task.clocks.notesFormat }; note.clocks.assets = { ...task.clocks.notesAssets };
         this.state.notes.push(note);
         this.patch(task, { noteLink: { noteId: note.id, taskLife: { ...task.clocks.deleted }, noteLife: { ...note.clocks.deleted } } });
@@ -187,18 +196,48 @@ export class WorkspaceEngine {
         this.state.steps.push(this.record(stepId, { taskId: command.taskId, title: command.title, completed: false, deleted: false, originId: stepId })); break;
       }
       case 'step.update': this.patch(this.state.steps.find(item => item.id === command.id), command.patch); break;
-      case 'note.add': this.state.notes.push(this.record(crypto.randomUUID(), { title: command.title ?? '', content: command.content ?? '', color: command.color ?? 'yellow', format: command.format ?? 'text', assets: command.assets ?? {}, createdAt: now, deleted: false })); break;
+      case 'note.add': this.state.notes.push(this.record(crypto.randomUUID(), { title: command.title ?? '', content: command.content ?? '', color: command.color ?? 'yellow', format: command.format ?? 'markdown', assets: command.assets ?? {}, createdAt: now, deleted: false, desktop: 'visible', notebook: 'none', folderId: null })); break;
       case 'note.update': {
         const note = this.state.notes.find(item => item.id === command.id);
         const { deleted, ...patch } = command.patch;
         this.patch(note, patch);
         synchronizeLinkedNotes(this.state);
         const task = note && linkedTaskForNote(this.state, note);
-        if (deleted !== undefined) this.patch(note, { deleted });
-        if (deleted && task) this.patch(task, { noteLink: { ...task.values.noteLink!, detached: { side: 'note', clock: { ...note!.clocks.deleted } } } });
+        if (deleted === true) this.patch(note, { desktop: 'removed' });
+        if (deleted === false && note) this.patch(note, {
+          desktop: note.values.desktop === 'removed' ? 'visible' : note.values.desktop,
+          notebook: note.values.notebook === 'removed' ? 'visible' : note.values.notebook,
+        });
+        normalizeNoteViews(this.state);
+        if (note?.values.deleted && task && !task.values.noteLink?.detached) this.patch(task, { noteLink: { ...task.values.noteLink!, detached: { side: 'note', clock: { ...note.clocks.deleted } } } });
         break;
       }
+      case 'notebook.add': {
+        this.ensureFolder(command.folderId ?? null);
+        this.state.notes.push(this.record(crypto.randomUUID(), { title: command.title ?? '', content: '', color: 'yellow', format: 'markdown', assets: {}, createdAt: now, deleted: false, desktop: 'none', notebook: 'visible', folderId: command.folderId ?? null })); break;
+      }
+      case 'note.notebook': {
+        if (command.folderId !== undefined) this.ensureFolder(command.folderId);
+        const note = this.state.notes.find(item => item.id === command.id);
+        this.patch(note, { notebook: 'visible', ...(command.folderId !== undefined ? { folderId: command.folderId } : {}), ...(command.mode === 'convert' ? { desktop: 'none' } : {}) }); normalizeNoteViews(this.state); break;
+      }
+      case 'note.desktop': this.patch(this.state.notes.find(item => item.id === command.id), { desktop: 'visible' }); normalizeNoteViews(this.state); break;
+      case 'notebook.remove': this.patch(this.state.notes.find(item => item.id === command.id && !item.values.deleted), { notebook: 'removed' }); normalizeNoteViews(this.state); break;
+      case 'notebook.move': this.ensureFolder(command.folderId); this.patch(this.state.notes.find(item => item.id === command.id && !item.values.deleted), { folderId: command.folderId }); break;
+      case 'noteFolder.add':
+        this.ensureFolder(command.parentId);
+        this.state.noteFolders.push(this.record(crypto.randomUUID(), { name: command.name, parentId: command.parentId, createdAt: now, deleted: false })); break;
+      case 'noteFolder.update': {
+        if (command.patch.parentId !== undefined) {
+          this.ensureFolder(command.patch.parentId); const seen = new Set([command.id]); let parent = command.patch.parentId;
+          while (parent) { if (seen.has(parent)) throw new Error('目录不能移动到自身或子目录中。'); seen.add(parent); parent = this.state.noteFolders.find(item => item.id === parent)?.values.parentId ?? null; }
+        }
+        this.patch(this.state.noteFolders.find(item => item.id === command.id), command.patch); break;
+      }
     }
+  }
+  private ensureFolder(id: string | null) {
+    if (id && !this.state.noteFolders.some(item => item.id === id && !item.values.deleted)) throw new Error('目录已删除，请重新选择。');
   }
   private ensureList(id: string) {
     if (id !== 'inbox' && !this.state.lists.some(item => item.id === id && !item.values.deleted)) throw new Error('清单已删除，请选择其他清单。');

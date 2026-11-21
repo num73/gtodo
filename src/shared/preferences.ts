@@ -7,10 +7,11 @@ export const startupViews = [
   { value: 'inbox', label: '任务' }, { value: 'all', label: '全部任务' },
   { value: 'important', label: '重要' }, { value: 'planned', label: '计划' },
   { value: 'completed', label: '已完成' },
+  { value: 'notebook', label: '笔记' },
 ] as const;
 const color = z.string().regex(/^#[\da-fA-F]{6}$/);
 export const userPreferencesSchema = z.object({
-  startupView: z.enum(['day', 'board', 'inbox', 'all', 'important', 'planned', 'completed']).default('day'),
+  startupView: z.enum(['day', 'board', 'inbox', 'all', 'important', 'planned', 'completed', 'notebook']).default('day'),
   closeAction: z.enum(['auto', 'background', 'quit']).default('auto'),
   restoreNotes: z.boolean().default(true),
   restorePomodoro: z.boolean().default(true),

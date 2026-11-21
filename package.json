@@ -18,6 +18,8 @@
     "test:window": "node scripts/test-window-layout-native.mjs",
     "test:board": "node scripts/test-board-native.mjs",
     "test:settings": "node scripts/test-settings-native.mjs",
+    "test:markdown": "node scripts/test-markdown-native.mjs",
+    "test:notebook": "node scripts/test-notebook-native.mjs",
     "test:capture": "node scripts/test-screen-capture-native.mjs",
     "test:pomodoro-layout": "node scripts/test-pomodoro-layout.mjs",
     "test:taskbar": "node scripts/test-taskbar-native.mjs",
@@ -27,8 +29,18 @@
     "dist": "npm run build && electron-builder --win zip portable --x64"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@lezer/highlight": "^1.2.5",
     "lucide-react": "^1.75.0",
     "mdast-util-from-markdown": "^2.1.0",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark-extension-gfm": "^3.0.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
@@ -57,7 +69,11 @@
     "productName": "GTodo",
     "asar": true,
     "artifactName": "GTodo-v${version}-Windows-${arch}.${ext}",
-    "electronLanguages": ["zh-CN", "zh-TW", "en-US"],
+    "electronLanguages": [
+      "zh-CN",
+      "zh-TW",
+      "en-US"
+    ],
     "directories": {
       "output": "release"
     },

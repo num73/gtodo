@@ -111,7 +111,7 @@ export class DocumentFiles {
     return false;
   }
   private async conflict(root: string, entry: Entry, content: string) {
-    const file = await safePath(root, [...documentParts(entry), 'conflicts', `${hash(content)}.${entry.format === 'markdown' ? 'md' : 'txt'}`], true);
+    const file = await safePath(root, [...documentParts(entry), 'conflicts', `${hash(content)}.md`], true);
     await atomicWrite(file, content);
     this.notice = '检测到同时编辑，已在文档旁的 conflicts 文件夹保留另一份内容。';
   }
@@ -150,25 +150,32 @@ export class DocumentFiles {
     for (const original of entries(engine.state).filter(item => !item.deleted)) {
       const parts = [...documentParts(original), documentFileName(original.format)];
       const key = this.key(root, parts);
-      const bytes = await optionalRead(root, parts, MAX_TEXT_BYTES);
+      let bytes = await optionalRead(root, parts, MAX_TEXT_BYTES);
+      let baselineKey = key;
+      const markdownMissing = bytes === null;
+      if (markdownMissing) {
+        const legacyParts = [...documentParts(original), 'note.txt'];
+        bytes = await optionalRead(root, legacyParts, MAX_TEXT_BYTES);
+        baselineKey = this.key(root, legacyParts);
+      }
       let content = original.content;
       let diskContent = content;
       if (bytes) {
         const disk = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\ufeff/, '');
         diskContent = disk;
         if (disk.length > 100000) throw new Error('备注文件不能超过 100000 个字符。');
-        const diskHash = hash(disk); scan.observed.set(key, diskHash);
+        const diskHash = hash(disk); scan.observed.set(key, markdownMissing ? null : diskHash);
         const knownBodies = knownEntries.filter(item => item.kind === original.kind && item.id === original.id).map(item => item.content);
-        if (disk !== content && this.baseline[key] !== diskHash && !knownBodies.includes(disk)) {
+        if (disk !== content && this.baseline[baselineKey] !== diskHash && !knownBodies.includes(disk)) {
           if (!this.settled(key, diskHash)) scan.protected.add(key);
           else {
-            if (this.baseline[key] !== hash(content)) await this.conflict(root, original, content);
+            if (this.baseline[baselineKey] !== hash(content)) await this.conflict(root, original, content);
             content = disk;
           }
         }
       } else scan.observed.set(key, null);
       const assets = { ...original.assets };
-      const paths = new Set([...Object.keys(assets), ...(original.format === 'markdown' ? [...referencedImages(content), ...referencedImages(diskContent)] : [])]);
+      const paths = new Set([...Object.keys(assets), ...referencedImages(content), ...referencedImages(diskContent)]);
       for (const relative of paths) {
         const assetParts = [...documentParts(original), 'assets', relative.slice(7)];
         const assetKey = this.key(root, assetParts);
@@ -207,11 +214,11 @@ export class DocumentFiles {
             await atomicWrite(file, entry.content);
           }
           this.baseline[key] = hash(entry.content); this.pending.delete(key);
-          const otherParts = [...documentParts(entry), documentFileName(entry.format === 'markdown' ? 'text' : 'markdown')];
+          const otherParts = [...documentParts(entry), 'note.txt'];
           const other = await optionalRead(root, otherParts, MAX_TEXT_BYTES);
           if (other) {
             const otherText = new TextDecoder('utf-8', { fatal: true }).decode(other);
-            if (this.baseline[this.key(root, otherParts)] !== hash(otherText)) await this.conflict(root, { ...entry, format: entry.format === 'markdown' ? 'text' : 'markdown' }, otherText);
+            if (otherText !== entry.content && this.baseline[this.key(root, otherParts)] !== hash(otherText)) await this.conflict(root, entry, otherText);
             await rename(await safePath(root, otherParts), await safePath(root, [...documentParts(entry), `${otherParts.at(-1)}.previous`], true));
           }
         }

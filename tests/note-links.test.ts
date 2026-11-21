@@ -38,8 +38,7 @@ test('linked content, Markdown and images update both ways while titles and colo
   assert.equal(task.values.notes, '# 在便签里修改');
   assert.equal(task.values.title, '会议准备');
   assert.deepEqual(task.clocks.notes, note.clocks.content);
-  engine.apply({ type: 'note.update', id: noteId, patch: { format: 'text' } });
-  assert.equal(task.values.notesFormat, 'text');
+  assert.equal(task.values.notesFormat, 'markdown');
 });
 
 for (const removed of ['task', 'note'] as const) test(`deleting a linked ${removed} preserves the other side and undo never reconnects it`, () => {

@@ -48,7 +48,7 @@ test('folder, zoom and window preferences survive concurrent updates and a resta
     preferences.update(value => { value.window = window; }),
   ]);
   const reopened = new PreferencesStore(directory); await reopened.initialize();
-  assert.deepEqual(reopened.value, { dataPath, zoom: 150, window, paneLayout: { sidebar: 224, details: 322 }, user: defaultUserPreferences, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null } });
+  assert.deepEqual(reopened.value, { dataPath, zoom: 150, window, paneLayout: { sidebar: 224, details: 322 }, user: defaultUserPreferences, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null }, git: { enabled: false } });
   await assert.rejects(preferences.update(value => { value.zoom = 500; }));
   assert.equal(preferences.value.zoom, 150);
 });

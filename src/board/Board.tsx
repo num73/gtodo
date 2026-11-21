@@ -1,15 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { LayoutDashboard, CheckCircle2, StickyNote, Type, Image as ImageIcon, Wallpaper, Plus, Minus, Maximize, Maximize2, Minimize2, Check, ArrowUpToLine, ArrowDownToLine, X, Palette, ArrowUpRight, Search } from 'lucide-react';
 import type { AppState, Command, DesktopAPI } from '../shared/model';
-import { BOARD_SIZE, boardCardTitle, clampBoardLayout, defaultBoard, defaultCardStyle, textBackgrounds, type BoardCard as Card, type BoardCardValues, type BoardContent, type BoardImageInput, type BoardLayout, type BoardValues } from '../shared/board';
+import { boardSize, boardSizes, boardCardTitle, clampBoardLayout, defaultBoard, defaultCardStyle, textBackgrounds, type BoardCard as Card, type BoardCardValues, type BoardContent, type BoardImageInput, type BoardLayout, type BoardValues, type BoardSize } from '../shared/board';
 import { MAX_IMAGE_BYTES } from '../shared/documents';
 import { flushMainDrafts, registerMainDraft } from '../notes/draft';
+import { isDesktopNote } from '../shared/notebook';
 import Modal from '../components/Modal';
 import BoardCard from './BoardCard';
 import BoardImage from './BoardImage';
 
 type Props = { state: AppState; api: DesktopAPI; update: (state: AppState) => void; toast: (text: string, undo?: () => void) => void; openTask: (id: string) => void; headingRef: RefObject<HTMLHeadingElement | null> };
-type Dialog = { kind: 'pick'; source: 'task' | 'note' } | { kind: 'source'; source: 'task' | 'note' } | { kind: 'edit'; card?: Card } | { kind: 'background' };
+type Dialog = { kind: 'pick'; source: 'task' | 'note' } | { kind: 'source'; source: 'task' | 'note' } | { kind: 'edit'; card?: Card } | { kind: 'background' } | { kind: 'size' };
 type CardStyle = Pick<BoardCardValues, 'color' | 'textColor' | 'fontSize' | 'align' | 'imageFit'>;
 const viewKey = 'gtodo-board-view';
 function savedView(): { zoom: number; x: number; y: number } {
@@ -38,6 +39,7 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
   const cards = state.workspace.boardCards.filter(item => !item.values.deleted);
   const selected = cards.find(item => item.id === selectedId);
   const background = state.workspace.boards[0]?.values ?? defaultBoard;
+  const size = boardSize(state.workspace);
   const saveView = () => {
     try { localStorage.setItem(viewKey, JSON.stringify({ zoom: zoomRef.current, x: viewport.current?.scrollLeft ?? 0, y: viewport.current?.scrollTop ?? 0 })); } catch { /* View preferences must not block editing. */ }
   };
@@ -78,7 +80,7 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
     // Stagger a new card if its origin would hide an existing card completely.
     let attempt = 0;
     while (attempt < 15 && cards.some(item => Math.abs(item.values.layout.x - x - attempt * 28) < 20 && Math.abs(item.values.layout.y - y - attempt * 28) < 20)) attempt++;
-    return clampBoardLayout({ x: x + attempt * 28, y: y + attempt * 28, ...size });
+    return clampBoardLayout({ x: x + attempt * 28, y: y + attempt * 28, ...size }, boardSize(state.workspace));
   }
   function reveal(id: string) {
     setSelectedId(id);
@@ -98,7 +100,8 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
     if (content.kind === 'task' || content.kind === 'note') void execute(async () => {
       if (document.fullscreenElement === panel.current) await document.exitFullscreen();
       if (content.kind === 'task') openTask(content.sourceId);
-      else await api.noteWindow({ type: 'open', id: content.sourceId });
+      else if (state.workspace.notes.some(note => note.id === content.sourceId && isDesktopNote(note))) await api.noteWindow({ type: 'open', id: content.sourceId });
+      else await api.showNotebook(content.sourceId);
     });
     else setDialog({ kind: 'edit', card });
   }
@@ -120,7 +123,7 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
       try {
         if (!/^image\/(png|jpeg|gif|webp)$/i.test(file.type) && !/\.(png|jpe?g|gif|webp)$/i.test(file.name)) throw new Error('请选择 PNG、JPEG、GIF 或 WebP 图片。');
         if (file.size > MAX_IMAGE_BYTES) throw new Error('单张图片不能超过 10 MB。');
-        const layout = origin ? clampBoardLayout({ x: origin.x + index * 28, y: origin.y + index * 28, width: 360, height: 260 }) : placement(index, { width: 360, height: 260 });
+        const layout = origin ? clampBoardLayout({ x: origin.x + index * 28, y: origin.y + index * 28, width: 360, height: 260 }, size) : placement(index, { width: 360, height: 260 });
         const next = await api.insertBoardImage({ destination: 'card', layout, name: file.name.slice(0, 200), bytes: new Uint8Array(await file.arrayBuffer()) });
         update(next); added(next, current.workspace.boardCards); current = next; count++;
       } catch (error) { errors.push(`${file.name}：${message(error)}`); }
@@ -136,8 +139,9 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
   function fit() {
     const area = viewport.current; if (!area) return;
     if (!cards.length) { setZoom(1); area.scrollLeft = 0; area.scrollTop = 0; return; }
-    const left = Math.min(...cards.map(item => item.values.layout.x)), top = Math.min(...cards.map(item => item.values.layout.y));
-    const right = Math.max(...cards.map(item => item.values.layout.x + item.values.layout.width)), bottom = Math.max(...cards.map(item => item.values.layout.y + item.values.layout.height));
+    const layouts = cards.map(item => clampBoardLayout(item.values.layout, size));
+    const left = Math.min(...layouts.map(item => item.x)), top = Math.min(...layouts.map(item => item.y));
+    const right = Math.max(...layouts.map(item => item.x + item.width)), bottom = Math.max(...layouts.map(item => item.y + item.height));
     const next = Math.max(0.1, Math.min(1, (area.clientWidth - 64) / (right - left), (area.clientHeight - 64) / (bottom - top)));
     setZoom(next);
     window.requestAnimationFrame(() => { area.scrollLeft = Math.max(0, left * next - 32); area.scrollTop = Math.max(0, top * next - 32); saveView(); });
@@ -154,6 +158,7 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
         <button className="button secondary" title="添加文字 / 标语" disabled={busy} onClick={() => setDialog({ kind: 'edit' })}><Type size={16} />文字 / 标语</button>
         <button className="button secondary" title="添加图片" disabled={busy} onClick={() => void importImages(() => pickImage('card'))}><ImageIcon size={16} />图片</button>
         <button className="button secondary board-background-button" title="自定义背景" disabled={busy} onClick={() => setDialog({ kind: 'background' })}><Wallpaper size={16} />背景</button>
+        <button className="button secondary" title="设置看板尺寸" disabled={busy} onClick={() => setDialog({ kind: 'size' })}><Maximize size={16} />尺寸</button>
       </div>
     </header>
     <div className="board-selection-bar">
@@ -180,7 +185,7 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
           pan.current = { x: event.clientX, y: event.clientY, left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop }; event.currentTarget.setPointerCapture(event.pointerId);
         }} onPointerMove={event => { if (pan.current) { event.currentTarget.scrollLeft = pan.current.left + pan.current.x - event.clientX; event.currentTarget.scrollTop = pan.current.top + pan.current.y - event.clientY; } }}
         onPointerUp={event => { if (!pan.current) return; pan.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={() => { pan.current = null; }} onLostPointerCapture={() => { pan.current = null; }}>
-        <div className="board-canvas-extent" style={{ width: BOARD_SIZE * zoom, height: BOARD_SIZE * zoom }}><div className="board-canvas" style={{ width: BOARD_SIZE, height: BOARD_SIZE, transform: `scale(${zoom})` }}>
+        <div className="board-canvas-extent" style={{ width: size.width * zoom, height: size.height * zoom }}><div className="board-canvas" style={{ width: size.width, height: size.height, transform: `scale(${zoom})` }}>
           {cards.map(card => <BoardCard key={card.id} card={card} workspace={state.workspace} zoom={zoom} selected={card.id === selectedId} revision={state.folder.lastRead} command={command} select={() => setSelectedId(card.id)} open={() => open(card)} remove={() => void execute(() => remove(card))} report={toast} />)}
         </div></div>
       </div>
@@ -203,7 +208,19 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
       setDialog(null);
     })} />}
     {dialog?.kind === 'background' && <BackgroundEditor background={background} busy={busy} close={() => setDialog(null)} pick={choose => void execute(async () => { const result = await api.pickBoardImage({ destination: 'background' }); if (result) choose(result.assetId); })} save={patch => void execute(async () => { await command({ type: 'board.update', patch }); setDialog(null); })} />}
+    {dialog?.kind === 'size' && <SizeEditor size={size} busy={busy} close={() => setDialog(null)} save={next => void execute(async () => { await flushMainDrafts(); await command({ type: 'board.update', patch: { size: next } }); setDialog(null); if (viewport.current) { viewport.current.scrollLeft = 0; viewport.current.scrollTop = 0; } })} />}
   </section>;
+}
+
+function SizeEditor({ size, busy, close, save }: { size: BoardSize; busy: boolean; close: () => void; save: (size: BoardSize) => void }) {
+  const [width, setWidth] = useState(String(size.width)), [height, setHeight] = useState(String(size.height));
+  const [selected, setSelected] = useState(boardSizes.find(item => item.width === size.width && item.height === size.height)?.name ?? 'custom');
+  return <Modal title="看板尺寸" close={close} busy={busy}><form className="board-form" onSubmit={event => { event.preventDefault(); save({ width: Number(width), height: Number(height) }); }}>
+    <label>参考尺寸<select aria-label="看板参考尺寸" value={selected} onChange={event => { setSelected(event.target.value); const preset = boardSizes.find(item => item.name === event.target.value); if (preset) { setWidth(String(preset.width)); setHeight(String(preset.height)); } }} disabled={busy}><option value="custom">自定义</option>{boardSizes.map(item => <option key={item.name} value={item.name}>{item.name} · {item.width} × {item.height}</option>)}</select></label>
+    <div className="board-form-row"><label>宽度（像素）<input aria-label="看板宽度" type="number" min={480} max={12000} step={1} required value={width} disabled={busy} onChange={event => { setSelected('custom'); setWidth(event.target.value); }} /></label><label>高度（像素）<input aria-label="看板高度" type="number" min={320} max={12000} step={1} required value={height} disabled={busy} onChange={event => { setSelected('custom'); setHeight(event.target.value); }} /></label></div>
+    <p className="board-dialog-hint">缩小时，超出边缘的贴纸会移回画布内；内容保留，贴纸可能重叠。尺寸随数据保存与同步。</p>
+    <div className="form-footer"><button type="button" className="button secondary" disabled={busy} onClick={close}>取消</button><button className="button primary" disabled={busy}>应用尺寸</button></div>
+  </form></Modal>;
 }
 
 function SourcePicker({ source, state, busy, close, create, pin }: { source: 'task' | 'note'; state: AppState; busy: boolean; close: () => void; create: () => void; pin: (id: string) => void }) {

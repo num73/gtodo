@@ -8,6 +8,7 @@ import type { PomodoroController } from '../pomodoro/usePomodoro';
 import PomodoroSettings from '../pomodoro/PomodoroSettings';
 import Modal from './Modal';
 import OutlookCalendarSettings from './OutlookCalendarSettings';
+import GitSettings from './GitSettings';
 import RecycleBin from './RecycleBin';
 
 function cleanError(error: unknown) { return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''); }
@@ -79,6 +80,8 @@ export default function Settings({ state, api, pomodoro, close, update, toast }:
       </div>
       <p className="setting-description">选择网盘的本地目录，由网盘客户端同步。请将文件保留在本地。</p>
       <p className="setting-description">切换目录会合并数据，保留原文件。</p>
+      <div className="settings-divider" />
+      <GitSettings state={state} api={api} active={category === 3} update={update} />
       <div className="settings-divider" />
       <div className="backup-row"><div><h3 className="section-label">回收站</h3><p>恢复已删除的记录，或永久清理文件。</p></div><button className="button secondary" disabled={busy} onClick={() => setTrashOpen(true)}><Trash2 size={16} />打开回收站</button></div>
       <div className="settings-divider" />

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { WorkspaceEngine, mergeWorkspaces } from '../src/shared/engine';
 import { commandSchema, emptyWorkspace, parseWorkspace } from '../src/shared/model';
-import { boardAssetIds, boardCardTitle, boardLayoutSchema, clampBoardLayout, defaultBoard } from '../src/shared/board';
+import { boardAssetIds, boardCardTitle, boardLayoutSchema, boardSize, boardSizes, MAX_BOARD_SIZE, clampBoardLayout, defaultBoard } from '../src/shared/board';
 import { trashRecords } from '../src/shared/trash';
 import { DataStore } from '../electron/storage';
 import { PreferencesStore } from '../electron/preferences';
@@ -27,10 +27,26 @@ test('legacy workspaces gain an empty board without changing tasks; board inputs
   const migrated = parseWorkspace(legacy);
   assert.deepEqual(migrated.tasks, engine.state.tasks); assert.deepEqual(migrated.boards, []); assert.deepEqual(migrated.boardCards, []);
   assert.equal(commandSchema.safeParse({ type: 'board.card.add', content: { kind: 'image', assetId: '../secret.png', name: 'x' } }).success, false);
-  assert.equal(boardLayoutSchema.safeParse({ x: 5900, y: 0, width: 300, height: 200 }).success, false);
+  assert.equal(boardLayoutSchema.safeParse({ x: MAX_BOARD_SIZE - 100, y: 0, width: 300, height: 200 }).success, false);
   assert.equal(boardLayoutSchema.safeParse({ x: Infinity, y: 0, width: 300, height: 200 }).success, false);
   assert.deepEqual(clampBoardLayout({ x: 7000, y: -1, width: 2000, height: 20 }), { x: 4400, y: 0, width: 1600, height: 100 });
   assert.ok(boardLayoutSchema.safeParse(clampBoardLayout({ x: 5839.5, y: 5899.5, width: 160.5, height: 100.5 })).success, 'rounding must not push the card beyond the canvas edge');
+});
+
+test('board sizes accept presets and custom bounds, retain legacy space and clamp cards without losing content', () => {
+  const engine = new WorkspaceEngine('sizes');
+  assert.deepEqual(boardSize(engine.state), { width: 1600, height: 1000 });
+  for (const preset of boardSizes) assert.ok(commandSchema.safeParse({ type: 'board.update', patch: { size: { width: preset.width, height: preset.height } } }).success);
+  for (const size of [{ width: 479, height: 500 }, { width: 500, height: 319 }, { width: 12001, height: 500 }, { width: 500.5, height: 500 }]) assert.equal(commandSchema.safeParse({ type: 'board.update', patch: { size } }).success, false);
+  engine.apply({ type: 'board.update', patch: { size: { width: 6000, height: 6000 } } });
+  engine.apply({ type: 'board.card.add', content: { kind: 'text', text: '保留边缘内容' }, layout: { x: 5400, y: 5400, width: 600, height: 600 } });
+  engine.apply({ type: 'board.update', patch: { size: { width: 900, height: 600 } } });
+  assert.deepEqual(engine.state.boardCards[0].values.layout, { x: 300, y: 0, width: 600, height: 600 });
+  assert.deepEqual(engine.state.boardCards[0].values.content, { kind: 'text', text: '保留边缘内容' });
+  engine.apply({ type: 'board.update', patch: { backgroundColor: '#112233' } });
+  assert.deepEqual(boardSize(parseWorkspace(JSON.parse(JSON.stringify(engine.state)))), { width: 900, height: 600 });
+  const legacy = JSON.parse(JSON.stringify(engine.state)); delete legacy.boards[0].values.size; delete legacy.boards[0].clocks.size;
+  assert.deepEqual(boardSize(parseWorkspace(legacy)), { width: 6000, height: 6000 });
 });
 
 test('first board settings on two devices merge independently; card layout and text retain both edits', () => {

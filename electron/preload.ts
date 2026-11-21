@@ -3,6 +3,9 @@ import type { DesktopAPI, AppState } from '../src/shared/model';
 import type { PomodoroSnapshot } from '../src/shared/pomodoro';
 
 const api: DesktopAPI = {
+  getGitStatus: () => ipcRenderer.invoke('gtodo:git-status'),
+  configureGit: input => ipcRenderer.invoke('gtodo:git-configure', input),
+  gitAction: input => ipcRenderer.invoke('gtodo:git-action', input),
   getPomodoro: () => ipcRenderer.invoke('gtodo:pomodoro-state'),
   pomodoroCommand: command => ipcRenderer.invoke('gtodo:pomodoro-command', command),
   onPomodoro: callback => {
@@ -40,6 +43,7 @@ const api: DesktopAPI = {
   noteWindow: action => ipcRenderer.invoke('gtodo:note-window', action),
   deleteNote: id => ipcRenderer.invoke('gtodo:note-delete', id),
   showMain: () => ipcRenderer.invoke('gtodo:show-main'),
+  showNotebook: id => ipcRenderer.invoke('gtodo:show-notebook', id),
   quit: () => ipcRenderer.send('gtodo:quit'),
   noteFlushed: (requestId, success) => ipcRenderer.invoke('gtodo:note-flushed', { requestId, success }),
   onNoteFlush: callback => {

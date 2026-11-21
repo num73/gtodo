@@ -1,7 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, readdir, writeFile, stat, copyFile, symlink } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, stat, copyFile, symlink, rename } from 'node:fs/promises';
 import { DataStore } from '../electron/storage';
 import { PreferencesStore } from '../electron/preferences';
 import { FolderStorage } from '../electron/folder-storage';
@@ -23,28 +23,33 @@ async function device(t: TestContext) {
   });
   const task: DocumentTarget = { kind: 'task', id: store.engine.state.tasks[0].id };
   const note: DocumentTarget = { kind: 'note', id: store.engine.state.notes[0].id };
-  const file = (target: DocumentTarget, format: 'text' | 'markdown' = 'text') => path.join(folder.directory, ...documentParts(target), documentFileName(format));
+  const file = (target: DocumentTarget, format: 'markdown' = 'markdown') => path.join(folder.directory, ...documentParts(target), documentFileName(format));
   return { root, store, preferences, documents, folder, task, note, file };
 }
 const png = () => readFile(path.resolve('assets/icon.png'));
 
-test('old workspaces migrate to plain text and unrelated updates never reset Markdown or image mappings', async t => {
+test('all workspaces use Markdown without rewriting old text, and unrelated updates preserve image mappings', async t => {
   const f = await device(t); const old = JSON.parse(JSON.stringify(f.store.engine.state));
   for (const item of old.tasks) { delete item.values.notesFormat; delete item.values.notesAssets; delete item.clocks.notesFormat; delete item.clocks.notesAssets; }
   for (const item of old.notes) { delete item.values.format; delete item.values.assets; delete item.clocks.format; delete item.clocks.assets; }
   const migrated = parseWorkspace(old);
-  assert.equal(migrated.tasks[0].values.notesFormat, 'text'); assert.deepEqual(migrated.notes[0].values.assets, {});
+  assert.equal(migrated.tasks[0].values.notesFormat, 'markdown'); assert.deepEqual(migrated.notes[0].values.assets, {});
+  old.notes[0].values.format = 'text'; old.notes[0].values.content = '# 原有文字\n保留 **符号**';
+  assert.equal(parseWorkspace(old).notes[0].values.content, '# 原有文字\n保留 **符号**');
+  assert.equal(parseWorkspace(old).notes[0].values.format, 'markdown');
   assert.deepEqual(commandSchema.parse({ type: 'task.update', id: f.task.id, patch: { important: true } }), { type: 'task.update', id: f.task.id, patch: { important: true } });
   assert.deepEqual(commandSchema.parse({ type: 'note.update', id: f.note.id, patch: { color: 'blue' } }), { type: 'note.update', id: f.note.id, patch: { color: 'blue' } });
 });
 
-test('text and Markdown are real editable files; switching modes preserves content and the prior file', async t => {
+test('an old txt file is read as Markdown, including external edits, and the original file is retained', async t => {
   const f = await device(t);
   assert.equal(await readFile(f.file(f.note), 'utf8'), '纯文本');
-  await f.folder.update(engine => engine.apply({ type: 'note.update', id: f.note.id, patch: { format: 'markdown', content: '# 标题\n\n```js\nconst a = 1;\n```' } }));
-  assert.equal(await readFile(f.file(f.note, 'markdown'), 'utf8'), f.store.engine.state.notes[0].values.content);
-  assert.equal(await readFile(`${f.file(f.note)}.previous`, 'utf8'), '纯文本');
-  await f.folder.update(engine => engine.apply({ type: 'note.update', id: f.note.id, patch: { format: 'text' } }));
+  const oldFile = path.join(path.dirname(f.file(f.note)), 'note.txt');
+  await rename(f.file(f.note), oldFile);
+  const content = '# 标题\n\n```js\nconst a = 1;\n```'; await writeFile(oldFile, content);
+  await f.folder.refresh(); await f.folder.refresh();
+  assert.equal(f.store.engine.state.notes[0].values.content, content);
+  assert.equal(await readFile(`${oldFile}.previous`, 'utf8'), content);
   assert.match(await readFile(f.file(f.note), 'utf8'), /```js/);
   assert.equal((await readdir(path.dirname(f.file(f.note)))).includes('assets'), false);
 });
@@ -132,7 +137,7 @@ test('a remote snapshot can update a document without turning stale materialized
   const local = second.store.engine.state.notes.find(item => item.id === first.note.id)!;
   assert.equal(local.values.content, '远端新内容');
   assert.deepEqual(local.clocks.content, first.store.engine.state.notes[0].clocks.content);
-  assert.equal(await readFile(path.join(second.folder.directory, ...documentParts(first.note), 'note.txt'), 'utf8'), '远端新内容');
+  assert.equal(await readFile(path.join(second.folder.directory, ...documentParts(first.note), 'note.md'), 'utf8'), '远端新内容');
   const before = (await stat(second.folder.ownFile)).mtimeMs; await second.folder.refresh();
   assert.equal((await stat(second.folder.ownFile)).mtimeMs, before);
 });

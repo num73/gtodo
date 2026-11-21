@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import { ArrowUpRight, Check, GripHorizontal, MoveDiagonal2, StickyNote, Image as ImageIcon, CheckCircle2 } from 'lucide-react';
 import { FieldDraft, registerMainDraft } from '../notes/draft';
-import { boardCardTitle, clampBoardLayout, resizeBoardLayout, type BoardCard as Card, type BoardLayout } from '../shared/board';
+import { boardCardTitle, boardSize, clampBoardLayout, resizeBoardLayout, type BoardCard as Card, type BoardLayout } from '../shared/board';
 import type { AppState, Command, Workspace } from '../shared/model';
 import { isComposing } from '../components/keyboard';
 import BoardImage from './BoardImage';
@@ -9,6 +9,7 @@ import BoardImage from './BoardImage';
 type Props = { card: Card; workspace: Workspace; zoom: number; selected: boolean; revision: string | null;
   command: (command: Command) => Promise<AppState>; select: () => void; open: () => void; remove: () => void; report: (text: string) => void };
 export default function BoardCard({ card, workspace, zoom, selected, revision, command, select, open, remove, report }: Props) {
+  const bounds = boardSize(workspace);
   const commandRef = useRef(command); commandRef.current = command;
   const [draft] = useState(() => new FieldDraft({ layout: card.values.layout }, async patch => {
     const next = await commandRef.current({ type: 'board.card.update', id: card.id, patch });
@@ -23,7 +24,7 @@ export default function BoardCard({ card, workspace, zoom, selected, revision, c
   const [preview, setPreview] = useState<BoardLayout | null>(null);
   const gesture = useRef<{ x: number; y: number; layout: BoardLayout; resize: boolean; next: BoardLayout } | null>(null);
   const [completing, setCompleting] = useState(false);
-  const layout = preview ?? snapshot.values.layout;
+  const layout = clampBoardLayout(preview ?? snapshot.values.layout, bounds);
   const content = card.values.content;
   const task = content.kind === 'task' ? workspace.tasks.find(item => item.id === content.sourceId && !item.values.deleted) : undefined;
   const note = content.kind === 'note' ? workspace.notes.find(item => item.id === content.sourceId && !item.values.deleted) : undefined;
@@ -40,7 +41,7 @@ export default function BoardCard({ card, workspace, zoom, selected, revision, c
   function move(event: PointerEvent<HTMLElement>) {
     const start = gesture.current; if (!start) return;
     const dx = (event.clientX - start.x) / zoom, dy = (event.clientY - start.y) / zoom;
-    start.next = start.resize ? resizeBoardLayout(start.layout, start.layout.width + dx, start.layout.height + dy) : clampBoardLayout({ ...start.layout, x: start.layout.x + dx, y: start.layout.y + dy });
+    start.next = start.resize ? resizeBoardLayout(start.layout, start.layout.width + dx, start.layout.height + dy, bounds) : clampBoardLayout({ ...start.layout, x: start.layout.x + dx, y: start.layout.y + dy }, bounds);
     setPreview(start.next);
   }
   function end(event: PointerEvent<HTMLElement>, save: boolean) {
@@ -57,7 +58,7 @@ export default function BoardCard({ card, workspace, zoom, selected, revision, c
     const step = event.shiftKey ? 50 : 10;
     const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
     const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
-    draft.change('layout', resize ? resizeBoardLayout(layout, layout.width + dx, layout.height + dy) : clampBoardLayout({ ...layout, x: layout.x + dx, y: layout.y + dy }));
+    draft.change('layout', resize ? resizeBoardLayout(layout, layout.width + dx, layout.height + dy, bounds) : clampBoardLayout({ ...layout, x: layout.x + dx, y: layout.y + dy }, bounds));
   }
   return <article data-card-id={card.id} className={`board-card ${selected ? 'selected' : ''} ${preview ? 'moving' : ''} board-kind-${content.kind}`} tabIndex={0} aria-label={`${kindName}贴纸：${title}`} aria-describedby={`board-card-help-${card.id}`}
     style={{ left: layout.x, top: layout.y, width: layout.width, height: layout.height, zIndex: card.values.z, backgroundColor: card.values.color, color: card.values.textColor } as CSSProperties}

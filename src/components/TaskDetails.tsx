@@ -88,8 +88,7 @@ export default function TaskDetails({ task, lists, steps, dispatch, close, remov
       {v.repeat !== 'none' && <p className="detail-hint">完成后创建下一次任务。</p>}
       {v.reminder && <p className="detail-hint">提醒需保持应用运行。</p>}
       <div className="detail-card note-card"><label><StickyNote size={17} />备注</label>
-        <DocumentEditor target={{ kind: 'task', id: task.id }} label="备注" value={notes} format={noteSnapshot.values.format} assets={v.notesAssets} onChange={value => noteDraft.change('content', value)}
-          onFormatChange={async format => { noteDraft.change('format', format); await noteDraft.flush(); }} onSave={() => noteDraft.flush()} />
+        <DocumentEditor target={{ kind: 'task', id: task.id }} label="备注" value={notes} assets={v.notesAssets} onChange={value => noteDraft.change('content', value)} onSave={() => noteDraft.flush()} />
         <div className={`document-save-status ${noteSnapshot.error ? 'is-error' : ''}`} role="status">{noteSnapshot.error || (noteSnapshot.dirty || noteSnapshot.saving ? '正在保存…' : '已保存')}{noteSnapshot.error && <button onClick={() => void noteDraft.flush().catch(() => {})}>重试</button>}</div>
       </div>
       {createLinkedNote && <button className="detail-card linked-note-button" disabled={linking} onClick={() => {

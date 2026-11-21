@@ -11,6 +11,10 @@ import Toast, { type ToastMessage } from './components/Toast';
 import { isComposing } from './components/keyboard';
 import NotesGallery from './notes/NotesGallery';
 import Board from './board/Board';
+import Notebook from './notebook/Notebook';
+import GitMenu from './components/GitMenu';
+import { BookOpen } from 'lucide-react';
+import { isDesktopNote, isNotebookNote } from './shared/notebook';
 import { flushMainDrafts } from './notes/draft';
 import { useMediaQuery } from './useMediaQuery';
 import { PomodoroLauncher } from './pomodoro/Pomodoro';
@@ -49,6 +53,8 @@ export default function App() {
   const [taskMenu, setTaskMenu] = useState<TaskMenu | null>(null);
   const [settings, setSettings] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [notebookId, setNotebookId] = useState<string | undefined>();
+  const notebookRequest = useRef('');
   const pomodoro = usePomodoro(api);
   const [paneLayout, setPaneLayout] = useState<PaneLayout>(defaultPaneLayout);
   const paneLayoutRef = useRef(paneLayout); paneLayoutRef.current = paneLayout;
@@ -110,6 +116,12 @@ export default function App() {
     return () => { alive = false; removeListener(); };
   }, [api]);
   useEffect(() => setSidebarOpen(false), [compactNavigation]);
+  useEffect(() => {
+    const request = state?.notebookRequest;
+    if (!request || request.nonce === notebookRequest.current) return;
+    notebookRequest.current = request.nonce;
+    void withSavedDetails(() => { setView('notebook'); setQuery(''); setSelectedId(null); setNotebookId(request.id); setNotesOpen(false); setSidebarOpen(false); });
+  }, [state?.notebookRequest?.nonce]);
   useEffect(() => { if (state) setShowCompleted(state.preferences.showCompleted); }, [state?.preferences.showCompleted]);
   useEffect(() => { if (state) setPaneLayout(state.paneLayout); }, [state?.paneLayout.sidebar, state?.paneLayout.details]);
   useEffect(() => {
@@ -148,7 +160,7 @@ export default function App() {
         event.preventDefault();
         void withSavedDetails(() => {
           setSidebarOpen(false); setSelectedId(null);
-          if (view === 'board' && !query.trim()) setView('inbox');
+          if ((view === 'board' || view === 'notebook') && !query.trim()) setView('inbox');
           window.requestAnimationFrame(() => composerRef.current?.focus());
         });
         return;
@@ -298,6 +310,7 @@ export default function App() {
   return <div className="app-shell" data-navigation={compactNavigation ? 'drawer' : 'sidebar'} data-details-layout={overlayDetails ? 'drawer' : 'columns'}>
     <header className="titlebar">
       <div className="titlebar-left"><button ref={navigationToggle} className="mobile-nav-toggle icon-button" aria-label={sidebarOpen ? '收起清单导航' : '展开清单导航'} aria-expanded={sidebarOpen} aria-controls="list-navigation" onClick={() => void withSavedDetails(() => { setSidebarOpen(!sidebarOpen); setSelectedId(null); })}><Menu size={18} /></button><span className="mini-mark"><Check size={13} strokeWidth={3} /></span><span className="titlebar-brand-text">GTodo</span></div>
+      {state.gitEnabled && <GitMenu api={api!} />}
       <div className="titlebar-right"><div className="titlebar-zoom"><button aria-label="缩小显示" title="缩小 (Ctrl −)" disabled={state.zoom <= zoomSteps[0]} onClick={() => void changeZoom('out')}><Minus size={13} /></button><button className="zoom-percentage" aria-label={`当前缩放 ${state.zoom}%，点击恢复 100%`} title="恢复 100% (Ctrl 0)" onClick={() => void changeZoom('reset')}>{state.zoom}%</button><button aria-label="放大显示" title="放大 (Ctrl +)" disabled={state.zoom >= zoomSteps.at(-1)!} onClick={() => void changeZoom('in')}><Plus size={13} /></button></div><button className="titlebar-settings icon-button" aria-label="打开设置" title="设置" onClick={() => setSettings(true)}><SettingsIcon size={15} /></button><div className="window-buttons"><button aria-label="最小化" onClick={() => api!.windowControl('minimize')}><Minus size={15} /></button><button aria-label={state.mainWindow.fullScreen ? '退出全屏' : state.mainWindow.maximized ? '还原窗口' : '最大化'} title={state.mainWindow.fullScreen ? '退出全屏' : state.mainWindow.maximized ? '还原窗口' : '最大化'} onClick={() => api!.windowControl('maximize')}>{state.mainWindow.fullScreen ? <Minimize2 size={12} /> : state.mainWindow.maximized ? <Copy size={12} /> : <Square size={12} />}</button><button className="window-close" aria-label="关闭窗口" onClick={() => api!.windowControl('close')}><X size={17} /></button></div></div>
     </header>
     <div className="app-body" ref={bodyRef} style={{ '--sidebar-width': `${fittedPanes.sidebar}px`, '--details-width': `${fittedPanes.details}px` } as CSSProperties}>
@@ -316,11 +329,11 @@ export default function App() {
         <button className={`nav-item board-nav ${!search && view === 'board' ? 'active' : ''}`} onClick={() => navigate('board')}><LayoutDashboard size={19} /><span>我的看板</span></button>
         <div className="list-heading"><span>清单</span><button className="icon-button" aria-label="新建清单" onClick={() => openListDialog('new')}><Plus size={17} /></button></div>
         <nav className="custom-nav" aria-label="我的清单"><button className={`nav-item ${!search && view === 'inbox' ? 'active' : ''}`} onClick={() => navigate('inbox')}><List size={20} className="color-blue" /><span>任务</span><span className="nav-count">{tasks.filter(task => matches(task, 'inbox') && !task.values.completed).length || ''}</span></button>{lists.map(list => <button key={list.id} className={`nav-item ${!search && view === list.id ? 'active' : ''}`} onClick={() => navigate(list.id)}><List size={20} className={`color-${list.values.color}`} /><span>{list.values.name}</span><span className="nav-count">{tasks.filter(task => task.values.listId === list.id && !task.values.completed).length || ''}</span></button>)}<button className="new-list" onClick={() => openListDialog('new')}><Plus size={19} />新建清单</button></nav>
-        <div className="sidebar-bottom"><PomodoroLauncher state={pomodoro.snapshot} open={() => openPomodoro()} /><button className="desktop-notes-button" onClick={() => { setNotesOpen(true); setSidebarOpen(false); }} title="Ctrl Shift N 新建便签"><StickyNote size={18} /><span>桌面便签</span><small>{state.workspace.notes.filter(note => !note.values.deleted).length || ''}</small></button>{state.folder.error && <div className="folder-status error-text" title={state.folder.error}><AlertCircle size={17} /><span>数据文件夹异常</span></div>}</div>
+        <div className="sidebar-bottom"><PomodoroLauncher state={pomodoro.snapshot} open={() => openPomodoro()} /><button className="desktop-notes-button" onClick={() => { setNotesOpen(true); setSidebarOpen(false); }} title="Ctrl Shift N 新建便签"><StickyNote size={18} /><span>桌面便签</span><small>{state.workspace.notes.filter(isDesktopNote).length || ''}</small></button><button className={`desktop-notes-button ${view === 'notebook' && !search ? 'active' : ''}`} onClick={() => navigate('notebook')}><BookOpen size={18} /><span>笔记</span><small>{state.workspace.notes.filter(isNotebookNote).length || ''}</small></button>{state.folder.error && <div className="folder-status error-text" title={state.folder.error}><AlertCircle size={17} /><span>数据文件夹异常</span></div>}</div>
       </aside>
       {!compactNavigation && <PaneDivider label="调整清单栏宽度" controls="list-navigation" value={fittedPanes.sidebar} min={paneLimits.sidebar.min} max={sidebarMax} defaultValue={defaultPaneLayout.sidebar} onChange={value => changePane('sidebar', value)} onCommit={value => savePane('sidebar', value)} />}
-      <main className={`main-panel theme-${meta.color} ${selected && !overlayDetails ? 'with-details' : ''} ${view === 'board' && !search ? 'main-board' : ''}`} inert={(overlayDetails && !!selected) || (compactNavigation && sidebarOpen)}>
-        {view === 'board' && !search ? <Board state={state} api={api!} update={setState} toast={notify} openTask={selectTask} headingRef={mainHeading} /> : <>
+      <main className={`main-panel theme-${meta.color} ${selected && !overlayDetails ? 'with-details' : ''} ${view === 'board' && !search ? 'main-board' : ''} ${view === 'notebook' && !search ? 'main-notebook' : ''}`} inert={(overlayDetails && !!selected) || (compactNavigation && sidebarOpen)}>
+        {view === 'notebook' && !search ? <Notebook state={state} api={api!} update={setState} toast={notify} requestedId={notebookId} requestNonce={state.notebookRequest?.nonce} /> : view === 'board' && !search ? <Board state={state} api={api!} update={setState} toast={notify} openTask={selectTask} headingRef={mainHeading} /> : <>
         <div className="main-scroll">
           <header className="page-header"><div className="hero-row"><div><div className="page-heading"><HeadingIcon size={24} strokeWidth={1.7} /><h1 ref={mainHeading} tabIndex={-1}>{search ? '搜索结果' : meta.title}</h1></div>{(search || view === 'day') && <p className="page-subtitle">{search ? `“${query.trim()}” · ${filtered.length} 个结果` : new Date(`${today}T12:00:00`).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</p>}</div><div className="header-actions">{search && <button className="soft-button" onClick={() => setQuery('')}><X size={16} /><span>退出搜索</span></button>}{view === 'day' && !search && <button className={`soft-button ${suggestions ? 'pressed' : ''}`} onClick={() => void withSavedDetails(() => { setSuggestions(!suggestions); setSelectedId(null); })}><Lightbulb size={17} /><span>建议</span></button>}{customList && !search && <button className="soft-button" onClick={() => openListDialog(customList)} aria-label="编辑清单"><SlidersHorizontal size={17} /></button>}</div></div>
           {view === 'day' && !search && filtered.length > 0 && <p className="day-progress">已完成 {completed.length} / {filtered.length}</p>}

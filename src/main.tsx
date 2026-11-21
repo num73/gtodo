@@ -9,6 +9,8 @@ import './notes/notes.css';
 import './pomodoro/pomodoro.css';
 import './components/document-editor.css';
 import './board/board.css';
+import './notebook/notebook.css';
+import './components/git.css';
 import type { DesktopAPI } from './shared/model';
 
 declare global { interface Window { gtodo?: DesktopAPI } }

@@ -28,6 +28,7 @@ const schema = z.object({
     }).optional(),
   })).default({}),
   outlook: z.object({ enabled: z.boolean(), target: outlookTargetSchema.nullable() }).default({ enabled: false, target: null }),
+  git: z.object({ enabled: z.boolean() }).default({ enabled: false }),
 });
 export type Preferences = z.infer<typeof schema>;
 export class PreferencesStore {
@@ -36,7 +37,7 @@ export class PreferencesStore {
   readonly file: string;
   constructor(readonly directory: string) {
     this.file = path.join(directory, 'preferences.json');
-    this.value = { dataPath: path.join(directory, 'data'), zoom: 100, paneLayout: { ...defaultPaneLayout }, user: { ...defaultUserPreferences }, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null } };
+    this.value = { dataPath: path.join(directory, 'data'), zoom: 100, paneLayout: { ...defaultPaneLayout }, user: { ...defaultUserPreferences }, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null }, git: { enabled: false } };
   }
   async initialize() {
     try { this.value = schema.parse(JSON.parse(await readFile(this.file, 'utf8'))); }

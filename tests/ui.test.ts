@@ -11,9 +11,14 @@ import { defaultPaneLayout, type PaneLayout } from '../src/shared/layout';
 import { trashRecords } from '../src/shared/trash';
 import { flushMainDrafts } from '../src/notes/draft';
 import { creationDefaults, defaultUserPreferences, patchUserPreferences, startupViews, type UserPreferences } from '../src/shared/preferences';
+import { emptyGitStatus } from '../src/shared/git';
+import type { GitConfigure } from '../src/shared/git';
 
 // Renderer behavior is tested in an isolated DOM, without controlling the user's preview window.
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
+// These DOM tests exercise source editing and save coordination. The live
+// contenteditable editor is tested with real input in the native suite.
+dom.window.localStorage.setItem('gtodo-markdown-editing-mode', 'source');
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, HTMLDialogElement: dom.window.HTMLDialogElement, Node: dom.window.Node, MutationObserver: dom.window.MutationObserver, getComputedStyle: dom.window.getComputedStyle, IS_REACT_ACT_ENVIRONMENT: true });
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
 dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -48,14 +53,17 @@ async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout, initialP
   let paneLayout: PaneLayout = { ...initialPaneLayout };
   let preferences = { ...defaultUserPreferences, ...initialPreferences };
   let mainWindow = { maximized: false, fullScreen: false };
+  let git = { ...emptyGitStatus(), installed: true };
+  let notebookRequest: AppState['notebookRequest'];
   const pomodoroWindow = { open: false, pinned: false };
   const timer = new PomodoroTimer({ directory: 'unused-memory-only', write: async () => {}, task: id => {
     const task = engine.state.tasks.find(task => task.id === id && !task.values.completed && !task.values.deleted);
     return task ? { id: task.id, title: task.values.title } : null;
   }, changed: value => { for (const listener of timerListeners) listener(value); } });
-  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.2.1', mainWindow: { ...mainWindow }, paneLayout: { ...paneLayout }, preferences: { ...preferences }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook });
+  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.2.1', mainWindow: { ...mainWindow }, paneLayout: { ...paneLayout }, preferences: { ...preferences }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook, gitEnabled: git.enabled, notebookRequest });
   const publish = () => { for (const listener of stateListeners) listener(snapshot()); };
   const api: DesktopAPI = {
+    getGitStatus: async () => git, configureGit: async input => { git = { ...git, ...input, repository: git.repository || !!input.initialize, branch: 'main' }; publish(); return git; }, gitAction: async () => git,
     getPomodoro: async () => timer.snapshot(), pomodoroCommand: command => timer.command(command),
     onPomodoro: callback => { timerListeners.add(callback); return () => { timerListeners.delete(callback); }; },
     openPomodoro: async taskId => {
@@ -88,7 +96,7 @@ async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout, initialP
     pickBoardImage: async () => null, insertBoardImage: async () => snapshot(),
     pickDocumentImage: async () => null, captureDocumentImage: async () => null, insertDocumentImage: async () => ({ path: `assets/${'a'.repeat(64)}.png`, name: '图片.png' }), showDocumentFile: async () => {}, openLink: async () => {},
     noteWindow: async () => {}, deleteNote: async id => { engine.apply({ type: 'note.update', id, patch: { deleted: true } }); publish(); return snapshot(); },
-    showMain: async () => {}, onNoteFlush: () => () => {}, noteFlushed: async () => {}, quit: () => {},
+    showMain: async () => {}, showNotebook: async id => { notebookRequest = { id, nonce: crypto.randomUUID() }; publish(); }, onNoteFlush: () => () => {}, noteFlushed: async () => {}, quit: () => {},
   };
   window.gtodo = api;
   render(React.createElement(App));
@@ -240,13 +248,13 @@ test('navigation stays visible when both columns fit and returns after expanding
 
 test('board resize at the canvas edge keeps the origin fixed and clamps the size', async () => {
   const { api, engine, user } = await mount();
-  await act(async () => { await api.command({ type: 'board.card.add', content: { kind: 'text', text: '边缘贴纸' }, layout: { x: 5800, y: 5800, width: 200, height: 200 } }); });
+  await act(async () => { await api.command({ type: 'board.card.add', content: { kind: 'text', text: '边缘贴纸' }, layout: { x: 1400, y: 800, width: 200, height: 200 } }); });
   await user.click(screen.getByRole('button', { name: '我的看板' }));
   const handle = screen.getByRole('button', { name: '调整文字贴纸大小：边缘贴纸' });
   fireEvent.keyDown(handle, { key: 'ArrowRight', shiftKey: true });
   fireEvent.keyDown(handle, { key: 'ArrowDown', shiftKey: true });
   await act(() => flushMainDrafts());
-  assert.deepEqual(engine.state.boardCards[0].values.layout, { x: 5800, y: 5800, width: 200, height: 200 });
+  assert.deepEqual(engine.state.boardCards[0].values.layout, { x: 1400, y: 800, width: 200, height: 200 });
 });
 
 test('retrying a missing background preview does not submit the settings form', async () => {
@@ -1059,8 +1067,8 @@ test('task notes require confirmation to link, then both editors share changes a
   await user.type(screen.getByRole('textbox', { name: '备注' }), '，从任务补充'); await user.tab();
   await waitFor(() => assert.equal((screen.getByRole('textbox', { name: '便签内容' }) as HTMLTextAreaElement).value, '整理议题，从便签补充，从任务补充'));
   await user.click(screen.getByRole('button', { name: '便签编辑选项' }));
-  await user.selectOptions(screen.getByRole('combobox', { name: '便签内容格式' }), 'markdown');
-  await waitFor(() => assert.equal((screen.getByRole('combobox', { name: '备注格式' }) as HTMLSelectElement).value, 'markdown'));
+  assert.equal(screen.queryByRole('combobox', { name: '便签内容格式' }), null);
+  assert.equal(engine.state.tasks[0].values.notesFormat, 'markdown');
   await act(async () => { await api.deleteNote(noteId); });
   await screen.findByRole('button', { name: '创建关联便签' });
   assert.equal(engine.state.tasks[0].values.deleted, false);
@@ -1100,11 +1108,10 @@ test('note window flush acknowledges only after the final text is saved', async 
   await waitFor(() => assert.deepEqual(acknowledgements, [{ requestId: 'close-request', success: true, content: '输入后立即收起' }]));
 });
 
-test('task notes opt into Markdown, preview headings, tables and highlighted code, and return to literal text', async () => {
+test('task notes always use Markdown, preview safely and return to the same source without a format switch', async () => {
   const { engine, user, add } = await mount(); await add('Markdown 任务');
   await user.click(screen.getByText('Markdown 任务', { exact: true }));
-  assert.equal((screen.getByRole('combobox', { name: '备注格式' }) as HTMLSelectElement).value, 'text');
-  await user.selectOptions(screen.getByRole('combobox', { name: '备注格式' }), 'markdown');
+  assert.equal(screen.queryByRole('combobox', { name: '备注格式' }), null);
   const content = '# 示例标题\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n```js\nconst answer = 42;\n```\n\n<script>window.hacked = true</script>\n[危险链接](javascript:alert(1))';
   fireEvent.change(screen.getByRole('textbox', { name: '备注' }), { target: { value: content } });
   await user.click(screen.getByRole('button', { name: '预览备注' }));
@@ -1112,15 +1119,14 @@ test('task notes opt into Markdown, preview headings, tables and highlighted cod
   assert.ok(screen.getByRole('table')); assert.ok(document.querySelector('pre code.hljs'));
   assert.equal(document.querySelector('script'), null); assert.equal(document.querySelector('a[href^="javascript:"]'), null);
   assert.equal(engine.state.tasks[0].values.notesFormat, 'markdown');
-  await user.selectOptions(screen.getByRole('combobox', { name: '备注格式' }), 'text');
+  await user.click(screen.getByRole('button', { name: '编辑备注' }));
   assert.equal((screen.getByRole('textbox', { name: '备注' }) as HTMLTextAreaElement).value, content);
-  assert.equal(screen.queryByRole('button', { name: '预览备注' }), null);
+  assert.ok(screen.getByRole('button', { name: '预览备注' }));
 });
 
 test('image insertion uses a relative Markdown asset and preview opens only the document-scoped image URL', async () => {
   const { engine, api, user, add } = await mount(); await add('插图任务');
   await user.click(screen.getByText('插图任务', { exact: true }));
-  await user.selectOptions(screen.getByRole('combobox', { name: '备注格式' }), 'markdown');
   const id = `${'b'.repeat(64)}.png`; const relative = `assets/${id}`;
   api.pickDocumentImage = async target => {
     assert.equal(target.id, engine.state.tasks[0].id);
@@ -1141,7 +1147,6 @@ test('image insertion uses a relative Markdown asset and preview opens only the 
 test('a partial document image import keeps the successfully imported image visible', async () => {
   const { api, engine, user, add } = await mount(); await add('部分图片导入');
   await user.click(screen.getByText('部分图片导入', { exact: true }));
-  await user.selectOptions(screen.getByRole('combobox', { name: '备注格式' }), 'markdown');
   let count = 0;
   api.insertDocumentImage = async () => { if (++count === 2) throw new Error('第二张图片无法读取'); return { path: `assets/${'e'.repeat(64)}.png`, name: '第一张.png' }; };
   const files = ['第一张.png', '第二张.png'].map(name => ({ name, type: 'image/png', size: 10, arrayBuffer: async () => new ArrayBuffer(10) }));
@@ -1175,7 +1180,6 @@ test('a note flush waits for image insertion and saves the resulting Markdown be
 test('screenshots insert at the saved task-note selection and persist a document-scoped image', async () => {
   const { engine, api, user, add } = await mount(); await add('截图任务');
   await user.click(screen.getByText('截图任务', { exact: true }));
-  await user.selectOptions(screen.getByRole('combobox', { name: '备注格式' }), 'markdown');
   const area = screen.getByRole('textbox', { name: '备注' }) as HTMLTextAreaElement;
   fireEvent.change(area, { target: { value: '前文\n后文' } }); area.setSelectionRange(3, 3); fireEvent.select(area);
   const id = `${'c'.repeat(64)}.png`; const relative = `assets/${id}`;
@@ -1190,18 +1194,14 @@ test('screenshots insert at the saved task-note selection and persist a document
   assert.match((await screen.findByRole('img', { name: '截图示例' })).getAttribute('src')!, /gtodo:\/\/app\/media\/task\//);
 });
 
-test('plain-text screenshot conversion is explicit and cancellation or errors preserve the text', async () => {
+test('screenshots insert directly without conversion and cancellation or errors preserve the text', async () => {
   const { engine, api, user, add } = await mount(); await add('保留截图前的文字');
   await user.click(screen.getByText('保留截图前的文字', { exact: true }));
   fireEvent.change(screen.getByRole('textbox', { name: '备注' }), { target: { value: '保留草稿' } });
   let called = 0;
   api.captureDocumentImage = async () => { called++; throw new Error('截图未能启动'); };
   await user.click(screen.getByRole('button', { name: '截图插入备注' }));
-  const prompt = screen.getByRole('group', { name: '截图格式确认' });
-  await user.click(within(prompt).getByRole('button', { name: '取消' }));
-  assert.equal(called, 0); assert.equal(engine.state.tasks[0].values.notesFormat, 'text');
-  await user.click(screen.getByRole('button', { name: '截图插入备注' }));
-  await user.click(screen.getByRole('button', { name: '转换并截图' }));
+  assert.equal(screen.queryByRole('group', { name: '截图格式确认' }), null);
   await screen.findByText('截图未能启动'); assert.equal(engine.state.tasks[0].values.notes, '保留草稿');
   assert.equal(engine.state.tasks[0].values.notesFormat, 'markdown'); assert.equal(called, 1);
   api.captureDocumentImage = async () => null;
@@ -1231,7 +1231,7 @@ test('sticky-note screenshots stay in the collapsed toolbar and update an explic
   assert.equal(screen.queryByRole('button', { name: '截图插入便签内容' }), null);
 });
 
-test('sticky notes choose Markdown independently and insert a real fenced code block', async () => {
+test('sticky notes directly insert Markdown code without a format menu', async () => {
   const { engine, api, user } = await mount(); cleanup();
   engine.apply({ type: 'note.add', content: '保留正文' });
   const { NoteEditor } = await import('../src/notes/StickyNoteWindow');
@@ -1240,7 +1240,6 @@ test('sticky notes choose Markdown independently and insert a real fenced code b
   assert.equal(screen.queryByRole('button', { name: '蓝色便签' }), null);
   await user.click(screen.getByRole('button', { name: '便签编辑选项' }));
   await user.click(screen.getByRole('button', { name: '蓝色便签' }));
-  await user.selectOptions(screen.getByRole('combobox', { name: '便签内容格式' }), 'markdown');
   await user.click(screen.getByRole('button', { name: '插入代码块到便签内容' }));
   await waitFor(() => assert.match(engine.state.notes[0].values.content, /```text/));
   assert.equal(engine.state.notes[0].values.format, 'markdown');
@@ -1280,4 +1279,23 @@ test('pane resizing preserves the draft, remembers widths and uses drawers on a 
   assert.ok(screen.getByRole('dialog', { name: '任务详情' }));
   await resize(1320);
   assert.equal(screen.getByRole('separator', { name: '调整任务详情宽度' }).getAttribute('aria-valuenow'), '362');
+});
+
+test('Git settings preserve an unchanged masked remote while saving identity and revealing the titlebar menu', async () => {
+  const { api, user } = await mount();
+  api.getGitStatus = async () => ({ ...emptyGitStatus(), installed: true, repository: true, branch: 'main', remote: 'https://***@example.invalid/repo.git', userName: '原身份', userEmail: 'qa@example.invalid' });
+  const configure = api.configureGit; let input: GitConfigure | undefined;
+  api.configureGit = async value => { input = value; return configure(value); };
+  assert.equal(screen.queryByRole('button', { name: 'Git 同步菜单' }), null);
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.click(screen.getByRole('tab', { name: '数据与同步' }));
+  await screen.findByDisplayValue('https://***@example.invalid/repo.git');
+  await user.clear(screen.getByRole('textbox', { name: 'Git 提交用户名' }));
+  await user.type(screen.getByRole('textbox', { name: 'Git 提交用户名' }), '新身份');
+  await user.click(screen.getByRole('button', { name: '启用 Git 同步' }));
+  await waitFor(() => assert.ok(input));
+  assert.equal(input!.remote, undefined, 'Masked remote must never overwrite the stored URL');
+  assert.equal(input!.userName, '新身份'); assert.equal(input!.userEmail, undefined);
+  await user.click(screen.getByRole('button', { name: '关闭对话框' }));
+  assert.ok(screen.getByRole('button', { name: 'Git 同步菜单' }));
 });

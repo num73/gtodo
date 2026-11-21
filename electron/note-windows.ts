@@ -1,6 +1,7 @@
 import type { BrowserWindow, WebContents } from 'electron';
 import type { AppState, Workspace } from '../src/shared/model';
 import type { PreferencesStore } from './preferences';
+import { isDesktopNote } from '../src/shared/notebook';
 
 export class NoteWindows {
   private windows = new Map<string, BrowserWindow>();
@@ -45,7 +46,7 @@ export class NoteWindows {
   private async openSaved(id: string, focus: boolean) {
     if (this.options.quitting()) return;
     const note = this.getNote(id);
-    if (!note || note.values.deleted) throw new Error('这张便签已不存在，请重新选择。');
+    if (!note || !isDesktopNote(note)) throw new Error('这张便签已移除，可以从笔记中重新关联。');
     const prior = this.options.preferences.value.noteWindows[id] ?? { open: false, pinned: false };
     // Window visibility and coordinates belong to this computer, not the shared folder.
     await this.options.preferences.update(value => { value.noteWindows[id] = { ...value.noteWindows[id] ?? prior, open: true }; });
@@ -115,7 +116,7 @@ export class NoteWindows {
   async restore() {
     let failed = 0;
     for (const [id, value] of Object.entries(this.options.preferences.value.noteWindows)) {
-      if (value.open && this.getNote(id) && !this.getNote(id)!.values.deleted) {
+      if (value.open && this.getNote(id) && isDesktopNote(this.getNote(id)!)) {
         try { await this.open(id, false); } catch { failed++; }
       }
     }

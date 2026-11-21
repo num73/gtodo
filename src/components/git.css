@@ -1,0 +1,21 @@
+.git-menu { -webkit-app-region: no-drag; margin-left: auto; margin-right: 8px; }
+.git-menu-trigger { position: relative; width: 28px; height: 26px; display: grid; place-items: center; color: var(--muted); }
+.git-busy-dot { position: absolute; right: 4px; top: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.git-popover { position: fixed; top: 40px; right: 10px; z-index: 500; width: min(360px, calc(100vw - 20px)); max-height: calc(100vh - 55px); overflow: auto; padding: 15px; border: 1px solid #d9dde4; background: #fff; border-radius: 5px; color: var(--text); font-size: 12px; -webkit-app-region: no-drag; }
+.git-popover header, .git-popover header strong { display: flex; gap: 7px; align-items: center; }
+.git-popover header { justify-content: space-between; }
+.git-menu .git-popover button { width: auto; height: auto; min-height: 30px; border-radius: 3px; padding: 6px 8px; display: inline-flex; gap: 5px; align-items: center; justify-content: center; font-size: 12px; }
+.git-menu .git-popover .button.primary { background: var(--accent); color: #fff; }
+.git-menu .git-popover .button.secondary { border: 1px solid #dde1e8; background: #fafbfc; }
+.git-summary { color: var(--muted); }
+.git-operation-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 12px; }
+.git-popover form, .git-config-form { display: flex; flex-direction: column; gap: 9px; }
+.git-popover label, .git-config-form label { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; }
+.git-popover textarea, .git-config-form input { width: 100%; min-width: 0; padding: 8px; border: 1px solid #d9dde4; border-radius: 3px; background: #fff; color: inherit; font: inherit; }
+.git-identity { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.git-popover details { margin-top: 12px; }
+.git-popover ul { list-style: none; padding: 0; max-height: 180px; overflow: auto; }
+.git-popover li { display: flex; gap: 7px; padding: 4px 0; overflow-wrap: anywhere; }
+.git-popover li code { white-space: pre; flex-shrink: 0; }
+.git-popover .inline-error { white-space: pre-wrap; overflow-wrap: anywhere; }
+.git-settings h3 { display: flex; gap: 6px; align-items: center; }

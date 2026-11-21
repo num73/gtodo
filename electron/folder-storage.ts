@@ -97,7 +97,7 @@ export class FolderStorage {
       await atomicWrite(path.join(directory, `device-${this.local.engine.deviceId}.json`), content);
       await this.documents.writeDocuments(directory, merged.state, scan);
       await this.local.update(engine => engine.merge(merged.state));
-      await this.preferences.update(value => { value.dataPath = directory; });
+      await this.preferences.update(value => { value.dataPath = directory; value.git.enabled = false; });
       this.status = { error: null, lastRead: new Date().toISOString() }; this.changed();
     });
   }
@@ -105,7 +105,6 @@ export class FolderStorage {
     return this.enqueue(async () => {
       await this.reconcile();
       const entry = documentEntry(this.local.engine.state, target);
-      if (entry.format !== 'markdown') throw new Error('请先启用 Markdown。');
       const id = await this.documents.cacheImage(bytes); const relative = `assets/${id}`;
       const assets = { ...entry.assets, [relative]: id };
       await this.local.update(engine => engine.apply(target.kind === 'task'
@@ -171,4 +170,11 @@ export class FolderStorage {
     });
   }
   async flush() { await this.queue; await this.local.flush(); }
+  exclusive<T>(action: () => Promise<T>, prepare = true, refreshAfter = false): Promise<T> {
+    return this.enqueue(async () => {
+      if (prepare) { await this.reconcile(); if (this.status.error) throw new Error(this.status.error); }
+      try { return await action(); }
+      finally { if (refreshAfter) await this.reconcile(); }
+    });
+  }
 }

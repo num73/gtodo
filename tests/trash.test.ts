@@ -178,7 +178,7 @@ test('cleanup rejects junctions before unlinking anything and preserves files ou
   const selection = trashRecords(f.store.engine.state);
   const result = await f.folder.purgeTrash(selection); assert.match(result.error!, /符号链接|目录联接/);
   assert.equal(await readFile(path.join(outside, 'keep.txt'), 'utf8'), 'KEEP');
-  assert.equal(await readFile(path.join(dir, 'note.txt'), 'utf8'), '');
+  assert.equal(await readFile(path.join(dir, 'note.md'), 'utf8'), '');
 });
 
 test('other device snapshots remain unchanged while stale imports cannot revive purged data', async t => {

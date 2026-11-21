@@ -4,6 +4,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { commandSchema, localDate, nextZoom, noteWindowActionSchema, parseWorkspace, zoomSteps, type AppState, type Command, type ZoomAction } from '../src/shared/model';
 import { linkedNoteForTask } from '../src/shared/note-links';
+import { isDesktopNote, isNotebookNote } from '../src/shared/notebook';
 import { applyCommandWithDrafts } from './linked-note-commands';
 import { withSavedWorkspace } from './workspace-actions';
 import { atomicWrite, DataStore } from './storage';
@@ -25,6 +26,8 @@ import { ScreenCapture } from './screen-capture';
 import { APP_USER_MODEL_ID, taskbarDetails } from './taskbar';
 import { boardImageInputSchema } from '../src/shared/board';
 import { creationDefaults, patchUserPreferences } from '../src/shared/preferences';
+import { GitSync } from './git-sync';
+import { gitActionSchema, gitConfigureSchema } from '../src/shared/git';
 
 app.setName('GTodo');
 app.setAppUserModelId(APP_USER_MODEL_ID);
@@ -59,12 +62,13 @@ let lastBounds: Preferences['window'];
 let zoomQueue: Promise<unknown> = Promise.resolve();
 const notified = new Set<string>();
 let quitting = false;
+let notebookRequest: AppState['notebookRequest'];
 const devURL = !app.isPackaged && process.env.GTODO_DEV_URL === 'http://127.0.0.1:5173' ? process.env.GTODO_DEV_URL : null;
 function state(): AppState {
   const mainWindow = window && !window.isDestroyed() ? { maximized: window.isMaximized(), fullScreen: window.isFullScreen() } : { maximized: false, fullScreen: false };
   const noteWindows = structuredClone(preferences.value.noteWindows);
   for (const [id, settings] of Object.entries(noteWindows)) settings.open = !!notes?.isVisible(id);
-  return { workspace: structuredClone(store.engine.state), deviceId: store.engine.deviceId, dataPath: folders.directory,
+  return { workspace: structuredClone(store.engine.state), deviceId: store.engine.deviceId, dataPath: folders.directory, notebookRequest, gitEnabled: preferences.value.git.enabled,
     notice: store.notice, folder: { ...folders.status }, zoom: preferences.value.zoom, version: app.getVersion(), mainWindow, preferences: { ...preferences.value.user }, paneLayout: { ...preferences.value.paneLayout }, pomodoroWindow: { ...structuredClone(preferences.value.pomodoroWindow), open: !!pomodoroWindow?.hasVisible() }, noteWindows, outlook: outlook?.snapshot() ?? emptyOutlookStatus() };
 }
 function changed() {
@@ -145,7 +149,7 @@ function updateTray() {
     { type: 'separator' },
     { label: '新建桌面便签', click: () => trayAction(() => createNote()) },
     { label: '显示所有便签', click: () => trayAction(async () => {
-      for (const note of store.engine.state.notes.filter(note => !note.values.deleted)) await notes.open(note.id, false);
+      for (const note of store.engine.state.notes.filter(isDesktopNote)) await notes.open(note.id, false);
     }) },
     { type: 'separator' },
     { label: '退出 GTodo', click: () => app.quit() },
@@ -329,10 +333,17 @@ async function initialize() {
   handle('gtodo:command', async (value, event) => {
     const command = commandSchema.parse(value);
     if (notes.owner(event.sender)) {
-      if (command.type !== 'note.update') throw new Error('便签窗口无法执行此操作。');
+      if (command.type !== 'note.update' && command.type !== 'note.notebook' && command.type !== 'note.desktop') throw new Error('便签窗口无法执行此操作。');
       ownNoteOnly(event, command.id);
     }
-    await applyCommand(command); return state();
+    await applyCommand(command);
+    if (command.type === 'note.notebook' && command.mode === 'convert') {
+      // The originating sticky window is about to be destroyed, so navigation
+      // must happen here instead of depending on its next IPC call.
+      notebookRequest = { id: command.id, nonce: crypto.randomUUID() }; showMain(); changed();
+      await notes.hide(command.id, false);
+    }
+    return state();
   }, true);
   handle('gtodo:note-link', async value => {
     const command = creationDefaults(commandSchema.parse({ type: 'task.link-note', id: value }), preferences.value.user);
@@ -386,7 +397,7 @@ async function initialize() {
   }, true);
   handle('gtodo:document-image-capture', async (value, event) => {
     const target = documentTargetSchema.parse(value); checkDocumentOwner(event, target);
-    if (documentEntry(store.engine.state, target).format !== 'markdown') throw new Error('请先启用 Markdown。');
+    documentEntry(store.engine.state, target);
     await startupWindows;
     if (quitting || preparingToQuit) throw new Error('应用正在退出。');
     const owner = BrowserWindow.fromWebContents(event.sender);
@@ -433,6 +444,21 @@ async function initialize() {
     notes.acknowledge(event.sender, result.requestId, result.success);
   }, true);
   handle('gtodo:show-main', showMain, true, true);
+  const git = new GitSync(folders, preferences);
+  handle('gtodo:git-status', async () => { await initialFolderRead; return git.status(); });
+  handle('gtodo:git-configure', async value => {
+    const input = gitConfigureSchema.parse(value);
+    const result = await withSavedData('配置 Git', () => git.configure(input)); changed(); return result;
+  });
+  handle('gtodo:git-action', async value => {
+    const input = gitActionSchema.parse(value);
+    const result = await withSavedData('执行 Git 操作', () => git.action(input)); changed(); return result;
+  });
+  handle('gtodo:show-notebook', (value, event) => {
+    const id = z.string().min(1).max(160).parse(value); ownNoteOnly(event, id);
+    if (!store.engine.state.notes.some(note => note.id === id && isNotebookNote(note))) throw new Error('笔记已移除。');
+    notebookRequest = { id, nonce: crypto.randomUUID() }; showMain(); changed();
+  }, true);
   handle('gtodo:choose-folder', async () => {
     const result = await dialog.showOpenDialog(window!, { title: '选择 GTodo 数据文件夹', defaultPath: folders.directory, properties: ['openDirectory', 'createDirectory'], buttonLabel: '使用此文件夹' });
     if (!result.canceled && result.filePaths[0]) await withSavedData('切换数据文件夹', () => folders.changeDirectory(result.filePaths[0]));

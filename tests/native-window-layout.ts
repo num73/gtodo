@@ -25,8 +25,17 @@ void (async () => {
     main.setContentSize(width, 700);
     await evaluate(`window.gtodo.setZoom(${zoom})`);
     const expectedWidth = Math.round(width * 100 / zoom);
+    // Windows may round the client width down by one CSS pixel at the active
+    // display DPI. Calibrate the requested size so the exact boundary is tested.
+    await until(() => evaluate(`Math.abs(innerWidth - ${expectedWidth}) <= 1`), 'window resize');
+    const actualWidth = await evaluate<number>('innerWidth');
+    if (actualWidth !== expectedWidth) main.setContentSize(width + Math.round((expectedWidth - actualWidth) * zoom / 100), 700);
     const mode = expectedWidth >= 486 ? 'sidebar' : 'drawer';
-    await until(() => evaluate(`Math.abs(innerWidth - ${expectedWidth}) <= 1 && document.querySelector('.app-shell').dataset.navigation === '${mode}' && ('${mode}' === 'drawer' || document.querySelector('.main-panel').getBoundingClientRect().width >= 299)`), `layout ${width} at ${zoom}%`);
+    try {
+      await until(() => evaluate(`Math.abs(innerWidth - ${expectedWidth}) <= 1 && document.querySelector('.app-shell').dataset.navigation === '${mode}' && ('${mode}' === 'drawer' || document.querySelector('.main-panel').getBoundingClientRect().width >= 299)`), `layout ${width} at ${zoom}%`);
+    } catch (error) {
+      throw new Error(`${error}; actual ${JSON.stringify(await evaluate(`({innerWidth, body:document.querySelector('.app-body').getBoundingClientRect().width, main:document.querySelector('.main-panel').getBoundingClientRect().width, sidebar:document.querySelector('.sidebar').getBoundingClientRect().width, mode:document.querySelector('.app-shell').dataset.navigation})`))}`);
+    }
     const report = await evaluate(`(() => {
       const nav = document.querySelector('.sidebar'), main = document.querySelector('.main-panel');
       const navRect = nav.getBoundingClientRect(), mainRect = main.getBoundingClientRect();

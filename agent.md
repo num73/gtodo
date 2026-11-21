@@ -4,7 +4,7 @@
 
 ## 项目概况
 
-- GTodo 是参考 Microsoft To Do 操作方式的 Windows 桌面待办应用，包含任务、桌面便签、Markdown 备注、番茄钟和 Outlook 日历同步。
+- GTodo 是参考 Microsoft To Do 操作方式的 Windows 桌面待办应用，包含任务、目录笔记、桌面便签、Markdown 编辑、自由看板、Git 手动同步、番茄钟和 Outlook 日历同步。
 - 技术栈：Electron、React、TypeScript、Vite、esbuild、Zod；具体依赖版本以 `package.json` 和 `package-lock.json` 为准。
 - 当前应用版本为 `0.2.1`。运行时通过 `app.getVersion()` 获取版本，不另设界面版本来源。
 - 开发环境：Windows x64，Node.js 22.12+ 或 24 LTS，PowerShell。使用 `npm.cmd` / `npx.cmd`，无需修改系统执行策略。
@@ -54,7 +54,7 @@
 - 新建清单后进入该清单；删除清单先确认任务去向。搜索和已完成页新增任务进入“任务”，不继承背后的智能清单条件。计划页默认截止日期必须在输入区可见且可清除；清除后创建的无日期任务应进入可见的“任务”清单。
 - 排序按清单分别记忆（当前会话），计划页默认按截止日期且控件显示一致；搜索和已完成页始终展开完成记录。窄屏搜索可按 Enter 收起导航查看结果，支持 Ctrl+K / Ctrl+F，Esc 每次只退出当前一层；中文输入法候选阶段不能提交表单或关闭面板。
 - 任务名称、备注和步骤名称使用草稿机制自动保存，支持 Enter 保存名称及 Ctrl+S 保存任务修改；切换任务、清单或关闭详情先等待草稿，失败时保留编辑界面。步骤可直接编辑，删除可撤销。操作提示放入当前模态对话框内以保持可点击，鼠标悬停或键盘聚焦时暂停消失计时。
-- 便签名称在标题栏下方、正文上方编辑，不放回原生拖动区域。颜色、格式、预览、图片和代码等选项折叠到标题栏“…”菜单。
+- 便签名称在标题栏下方、正文上方编辑，不放回原生拖动区域。颜色、实时/源码编辑、预览、图片和代码等选项折叠到标题栏“…”菜单。
 - 便签支持 12 种浅色配色，色板分两行显示。新增颜色时同步更新 `noteColors`、中文名称和便签样式，保留旧颜色 ID，并检查最小窗口下的显示和保存。
 - 便签和番茄钟是独立可移动、缩放、置顶的窗口；便签的 × 表示收起，不是删除。
 - 番茄钟由主进程计时，收起窗口后继续，退出应用或休眠时暂停；专注结束不自动完成任务。
@@ -69,7 +69,7 @@
 
 - 新建任务和重复任务生成的下一次任务默认 `noteLink: null`；旧便签不自动关联。
 - 只有用户点击“创建关联便签”并“确认创建”后才能建立关联。已有关系只打开原便签，重复调用不能生成多张。
-- 关联双方共享正文、纯文本/Markdown 格式和图片映射；任务标题、日期、步骤与便签名称、颜色各自独立。
+- 关联双方共享 Markdown 正文和图片映射；任务标题、日期、步骤与便签名称、颜色各自独立。
 - 关联双方使用任务目录中的同一个正文文件和 `assets`，不能退回到复制正文或维护两份独立文件。
 - 删除任一方前先保存两边草稿；保存失败则取消删除，保留编辑内容。
 - 删除便签：解除关联，保留任务备注。删除任务：解除关联，为保留的便签生成独立正文文件和图片。
@@ -80,18 +80,36 @@
 ### 本地文件与外部服务
 
 - 网盘同步由用户安装的网盘客户端处理。GTodo 只选择、读写本地数据文件夹，不恢复 OneDrive/WebDAV 登录、OAuth 或密码管理。
-- 正文默认纯文本 `.txt`，显式启用 Markdown 后使用 `.md`；图片使用文档旁的 `assets` 和相对路径。
-- 备注工具栏和便签“…”菜单提供截图入口。纯文本需明确确认转换为 Markdown；框选完成后在原光标位置插入 PNG 并保存，关联双方复用图片。取消不插入图片，已确认的格式转换保留。
+- 任务备注和便签仅使用 Markdown，统一保存 `.md`，不提供格式选择；旧 `text` 标记规范化为 `markdown`，正文原样保留。缺少 `note.md` 时可读回原 `note.txt`，保存后保留原文件为 `.previous`。图片使用文档旁的 `assets` 和相对路径。
+- 默认使用 CodeMirror 实时排版编辑；装饰仅改变显示，不能重新序列化 Markdown。光标进入语法时显示标记，图片和表格点击后编辑对应源码。保留源码模式、只读预览、中文 IME、撤销重做、100000 字符限制；工具栏插入也须进入撤销历史，外部刷新不进入本地撤销历史。编辑模式偏好保存在本机 localStorage。
+- 格式工具、表格及链接插入使用编辑器选区；查找替换使用 CodeMirror search，Ctrl+F/H 在文档内停止冒泡到任务搜索。展开编辑只改变布局，不重建草稿；Esc 优先关闭查找或预览，再退出展开。
+- 备注工具栏和便签“…”菜单提供截图入口。框选完成后在原光标位置插入 PNG 并保存，关联双方复用图片；取消不插入图片，原文不变。
 - 截图期间隐藏本应用原先可见且未最小化的窗口，结束、取消、加载失败、显示器变化及退出时恢复；全屏原图只留内存，选区才经现有图片接口保存。每次单个显示器框选，不使用剪贴板中转。
 - 支持 UTF-8 外部编辑后自动回读，先确认文件稳定，保留同时修改产生的冲突副本；后台刷新不能覆盖未保存的输入。
-- Markdown 预览不执行原始 HTML 或脚本；保留本地路径、图片类型与大小校验。
+- Markdown 实时编辑和预览不执行原始 HTML 或脚本；保留本地路径、图片类型与大小校验。渲染异常应保留可编辑的源码，不能丢弃输入。
 - 日历是 GTodo 到经典 Outlook 的单向同步，默认关闭。当前接口不能直接接入 Windows 任务栏日期弹窗或仅安装的新版 Outlook。
 - 只更新有 GTodo 归属标记且任务 ID 已知的日程；保留其他日历、普通日程和未知任务日程。停止同步或更换目标时不清理旧日历。
+
+### 目录笔记
+
+- `src/notebook/` 的入口固定在侧栏“桌面便签”下方。`noteFolders` 按字段时钟合并，支持上级目录与软删除；拒绝自身或子树循环，外部合并造成的循环或缺失上级按根目录显示。删目录不删除笔记或子目录。
+- 笔记与便签共用 `Workspace.notes` 一条记录及同一 Markdown 文档，`desktop` / `notebook` 分别为 visible、removed、none，`folderId` 只负责分类。两边都不 visible 时才派生 `deleted`，不可只删一个入口就清理正文。`normalizeNoteViews` 在合并时重新计算，覆盖两台设备分别删除不同入口的情况；旧便签默认只有 desktop。
+- `note.desktop` 和 `note.notebook` 恢复指定入口，回收站恢复还原曾移除的两边。转换为笔记保留 ID、正文和附件；主进程先发出 notebookRequest 再销毁便签窗口，不能依赖已销毁窗口的下一次 IPC 导航。
+- Notebook 的 FieldDraft 必须注册主窗口保存协调；关联、转换、删除操作等待主窗口和便签保存。看板上的笔记来源要打开可用入口，任务已有的关联记录可恢复 desktop，不能重复创建文档。
+- 运行 `tests/notebook.test.ts`、相关 UI 测试及 `test:notebook`，覆盖视图独立删除、离线合并、防复活、目录与备份、真实双窗口保存和重启。
+
+### Git 同步
+
+- `electron/git-sync.ts` 只对当前数据目录的独立仓库执行 Git；用 realpath 校验仓库根，避免暂存上级项目。使用 execFile 参数数组、windowsHide、超时和非交互认证，不拼接 shell。远程凭据和提交身份存储在 Git 的本机配置，不加入共享快照。
+- 初始化入口在设置，标题栏菜单仅在本机 Git 偏好开启时出现。切换数据目录自动停用，不删除仓库。状态中的含凭据 URL 脱敏；设置仅提交实际修改字段，不能把脱敏占位符写回 origin。
+- Configure/Action 经 withSavedData 保存所有草稿，再进入 FolderStorage.exclusive 串行队列。Pull 后重新读回工作区与文档；拒绝未提交修改，只使用 ff-only/no-rebase，不自动 force、reset、丢弃修改或解决冲突。
+- Add 包含数据目录，初始化 .gitignore 排除 .bak/.previous/.tmp。Push 使用当前分支与 origin，不更改项目源代码仓库。测试只允许 .qa 临时仓库与本地裸远程，不向个人远程执行 Push/Pull。
 
 ### 自由看板
 
 - `src/board/` 提供“我的看板”，使用自由布局而非固定列。任务/便签贴纸只引用源 ID，展示实时数据，不复制正文，不自动创建正文关联；移除贴纸不得删除来源。
 - `src/shared/board.ts` 定义布局、样式和图片引用。`Workspace.boards`、`boardCards` 在旧数据中默认为空；单个看板 ID 为 `main`，首次设置用零时钟初始化默认字段，避免两台设备首次修改不同设置时互相覆盖。布局作为一个字段原子合并，文字/配色等按字段合并。
+- 画布 size 作为一个字段保存，范围 480～12000 × 320～12000。新看板默认 1600 × 1000，已有无 size 的看板保留 6000 × 6000；未建设置的旧贴纸保留足够范围。缩小时持久化收回贴纸边界，渲染和“查看全部”也按当前尺寸裁切布局，不丢内容。部分设置补丁不得用 Zod 默认值覆盖 size。
 - 卡片拖动/调整大小通过 `FieldDraft` 保存并注册主窗口草稿；切页、退出前刷新，失败保留本地草稿并允许重试。置顶/置底为单个引擎命令。缩放/滚动位置使用本机 localStorage，不写入共享看板。
 - 文字贴纸不显示顶部横栏和常驻边框，直接拖动正文区域，双击或 Enter 编辑；保留选中轮廓、键盘移动/删除与缩放手柄。背景预设使用现有十六进制颜色字段，保留自定义颜色与取消语义。
 - 看板用 Fullscreen API 全屏显示自身元素，不重新挂载内容；编辑弹窗和 Toast 必须留在全屏元素内。打开原任务/便签或应用导航前退出看板全屏。Electron 只向主窗口的可信主 frame 开放 `fullscreen` 权限，其他权限与其他窗口仍拒绝。
@@ -104,7 +122,7 @@
 - 本机用户数据目录通常为 `%APPDATA%\GTodo`：`workspace.json` 及备份保存缓存和设备身份，`preferences.json` 保存本机设置，`pomodoro.json` 保存计时与统计，`document-state.json` 保存外部编辑基线，`media` 缓存图片。
 - `src/shared/preferences.ts` 定义 `preferences.json.user` 的逐字段默认值和严格补丁校验。旧文件缺少字段时沿用原行为；补丁需移除 schema 的 default 后再 partial，避免 Zod 自动补默认值而重置无关设置。偏好写入走 PreferencesStore 串行原子保存，失败不更新内存。仅主窗口可调用偏好 IPC；设置不进入工作区同步或 JSON 备份。
 - 所选共享目录使用 `device-<设备 ID>.json` 保存各设备快照；不能改为所有设备覆盖同一个 JSON。窗口位置、缩放、番茄钟状态和日历目标不随此目录共享。
-- 正文路径为 `documents/tasks/task-<ID>/note.txt|md` 或 `documents/notes/note-<ID>/note.txt|md`。关联便签复用任务路径；标题变化不改变路径。
+- 正文路径为 `documents/tasks/task-<ID>/note.md` 或 `documents/notes/note-<ID>/note.md`。关联便签复用任务路径；标题变化不改变路径。
 - JSON 同时保存属性、正文缓存、图片映射和修改时钟，用于恢复与合并。不要把正文文件当作唯一数据源，也不要把外部删除文件当作删除任务。
 - 当前 `schemaVersion` 为 `1`。增加字段时提供旧数据默认值和必要的时钟默认值；格式变化必须兼容已有数据与备份，不能靠清空数据完成迁移。
 - 保持字段级修改时钟和确定性合并。删除标记用于阻止离线旧副本复活记录，不随意清理。
@@ -135,6 +153,8 @@
 | `npm.cmd run test:window` | 真实主窗口状态、导航宽度边界与缩放恢复检查；先构建 |
 | `npm.cmd run test:board` | 真实鼠标操作、文字贴纸配色、看板全屏、图片与重载恢复检查；先构建 |
 | `npm.cmd run test:settings` | 三次真实启动验证偏好、通知、恢复和关闭行为及设置布局；独立数据并拦截系统通知，先构建 |
+| `npm.cmd run test:markdown` | 真实实时编辑器、中文 IME、撤销、图片与表格、关联同步和退出保存；独立数据，先构建 |
+| `npm.cmd run test:notebook` | 真实目录笔记、格式与替换、展开编辑、便签互转及删除恢复、看板尺寸、Git 设置/Add/Commit 和重启；独立数据，先构建 |
 | `npm.cmd run test:capture` | 截图边界测试：系统默认显示设置及 100% / 150% / 200% 进程缩放；先构建 |
 | `npm.cmd run test:pomodoro-layout` | 真实番茄钟窗口尺寸、布局及计时/设置保留测试；先构建 |
 | `npm.cmd run test:taskbar` | Windows 原生任务栏属性与独立快捷方式测试，不改用户固定项 |
@@ -154,7 +174,8 @@
 - 关联功能重点检查 `tests/note-links.test.ts`、`tests/linked-note-commands.test.ts`、`tests/documents.test.ts` 和 `tests/ui.test.ts`：双方编辑、外部回读、删除任一方、保存失败、撤销和离线合并。
 - 回收站改动运行 `tests/trash.test.ts` 及完整测试，重点覆盖文件真实释放、存活方及图片保护、删除标识的合并/重启、陈旧确认、部分清理失败和路径逃逸防护。清理测试只用 `.qa` 合成数据。
 - 改动窗口生命周期、置顶或加载协议时，构建后运行 `npm.cmd run test:notes`；它在 `.qa` 独立目录测试真实窗口和加载失败恢复。
-- 截图改动运行 `tests/screen-capture.test.ts` 与相关 UI 测试，检查选区边界、不同像素尺寸、多屏映射、来源拒绝、取消及错误恢复、纯文本确认和关联同步。实际桌面截图验证只使用合成测试背景，不保存个人屏幕内容。
+- Markdown 编辑改动运行 `tests/markdown.test.ts`、相关文档/UI 测试及 `test:markdown`；JSDOM 无法验证真实布局、IME 和光标，不能仅靠隐藏 textarea 的输入测试判断实时编辑有效。检查原文保留、语法更新、格式与插图撤销、输入长度、窄窗口和保存。
+- 截图改动运行 `tests/screen-capture.test.ts` 与相关 UI 测试，检查选区边界、不同像素尺寸、多屏映射、来源拒绝、取消及错误恢复和关联同步。实际桌面截图验证只使用合成测试背景，不保存个人屏幕内容。
 - 截图窗口边界或全屏方式改动后运行 `npm.cmd run test:capture`，用真实窗口和合成屏幕验证外框、内容区与显示器完整 `bounds` 一致，并检查底边裁剪和恢复；不能只断言 `isFullScreen()`。测试覆盖系统默认显示设置与显式进程缩放，后者用于边界计算回归，不等同于更改 Windows 系统 DPI；保留实际桌面验证。
 - 手动验证使用未打包 Electron：将当前进程的 `GTODO_DATA_DIR` 设为 `.qa` 下的唯一绝对路径，`GTODO_QA=1`，清除该进程的 `ELECTRON_RUN_AS_NODE`，再运行 `npm.cmd start`。测试后恢复原环境变量。
 - `GTODO_DATA_DIR` 仅在未打包模式生效；不能靠它隔离便携 EXE。不要使用个人任务目录执行删除或故障注入测试。
@@ -178,7 +199,7 @@
 - 任务栏 ID 保持 `app.gtodo.desktop`，与 `build.appId` 一致且不带版本号。打包版主窗口首次显示前调用 `setAppDetails`，同时提供 relaunchCommand、relaunchDisplayName 和稳定图标路径。便携版使用 electron-builder 提供的 `PORTABLE_EXECUTABLE_FILE`，不能使用临时目录里的 `process.execPath` 作为固定入口；ZIP 使用自身 EXE。不要修改用户固定项、任务栏缓存或注册表。升级说明提示从运行图标重新固定旧入口。依据：[Microsoft AppUserModelID](https://learn.microsoft.com/en-us/windows/win32/shell/appids)、[Electron setAppDetails](https://www.electronjs.org/docs/latest/api/base-window#winsetappdetailsoptions-windows)。
 - 单文件便携 EXE 每次都会解压运行环境；优先提供完整解压一次的 ZIP 版，不以固定共享临时目录换取速度。
 - 主窗口先读本机缓存，文件夹首次合并在窗口创建后运行；编辑仍进入 FolderStorage 串行队列。日历启用、手动同步及后台同步要等待首次读取；退出等待启动窗口恢复完成后再统一保存草稿。
-- Markdown 预览与代码高亮按需导入。发布包排除 `node_modules` 和主进程 source map：依赖已由 Vite/esbuild 打包；以后新增外部运行时依赖时须同步调整打包规则并验证 ASAR，不能盲目排除。
+- Markdown 实时编辑器、预览与各代码语言高亮按需导入，构建后的语言分块均需包含在发布包中。发布包排除 `node_modules` 和主进程 source map：依赖已由 Vite/esbuild 打包；以后新增外部运行时依赖时须同步调整打包规则并验证 ASAR，不能盲目排除。
 - `bench:startup` 可接收构建目录或 ASAR 路径、便签数量、运行次数，使用隔离的 `.qa` 数据；首次状态返回不是完整冷启动，便携解压需单独测量。诊断日志记录 `startup-local-ready` / `startup-folder-ready`，不记录正文。
 - Outlook PowerShell 桥接构建输出保留 UTF-8 BOM，兼容 Windows PowerShell 5.1 的中文处理。新日历使用标准描述字段标记归属，同时兼容旧标记。
 
