@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { ArrowUpRight, Check, Ellipsis, Link2, LoaderCircle, Pin, PinOff, Plus, RotateCcw, StickyNote, Trash2, X } from 'lucide-react';
+import { ArrowUpRight, BookOpen, Check, Ellipsis, FileInput, Link2, LoaderCircle, Pin, PinOff, Plus, RotateCcw, StickyNote, Trash2, X } from 'lucide-react';
 import { noteColors, noteColorNames, type AppState, type DesktopAPI, type Note } from '../shared/model';
 import { flushMainDrafts, NoteDraft } from './draft';
 import DocumentEditor from '../components/DocumentEditor';
@@ -40,6 +40,7 @@ export function NoteEditor({ note, state, api }: { note: Note; state: AppState; 
   const toolsButton = useRef<HTMLButtonElement>(null);
   const pinned = state.noteWindows[note.id]?.pinned ?? false;
   const removed = !isDesktopNote(note);
+  const notebookAction = isNotebookNote(note) ? '打开关联笔记' : '加入笔记并关联';
   const linkedTask = linkedTaskForNote(state.workspace, note);
   useEffect(() => { draft.receive(note.values); }, [draft, note.values]);
   useEffect(() => () => draft.dispose(), [draft]);
@@ -77,11 +78,13 @@ export function NoteEditor({ note, state, api }: { note: Note; state: AppState; 
       <div className="sticky-palette" role="group" aria-label="便签颜色">{noteColors.map(color => <button key={color} aria-label={`${noteColorNames[color]}便签`} title={noteColorNames[color]} aria-pressed={snapshot.values.color === color} className={`sticky-color sticky-${color}`} disabled={removed} onClick={() => draft.change('color', color)}>{snapshot.values.color === color && <Check size={14} />}</button>)}</div>
       <div ref={setToolbarTarget} />
       <div className="sticky-menu-actions">
-        <button disabled={busy || removed} onClick={() => void execute(async () => { if (!isNotebookNote(note)) await api.command({ type: 'note.notebook', id: note.id, mode: 'link' }); await api.showNotebook(note.id); setToolsOpen(false); }, true)}><Link2 size={15} />{isNotebookNote(note) ? '打开关联笔记' : '加入笔记并关联'}</button>
-        <button disabled={busy || removed} onClick={() => void execute(async () => { await api.command({ type: 'note.notebook', id: note.id, mode: 'convert' }); }, true)}><ArrowUpRight size={15} />转为笔记</button>
         <button disabled={busy} onClick={() => void execute(async () => { await api.createNote(); setToolsOpen(false); })}><Plus size={15} />新建便签</button>
         <button onClick={() => void execute(async () => { await api.showMain(); setToolsOpen(false); })}><ArrowUpRight size={15} />打开 GTodo</button>
-        <button disabled={busy || removed} onClick={() => setConfirmDelete(true)}><Trash2 size={15} />删除便签</button>
+      </div>
+      <div className="sticky-note-actions" role="group" aria-label="便签操作">
+        <button aria-label={notebookAction} title={notebookAction} disabled={busy || removed} onClick={() => void execute(async () => { if (!isNotebookNote(note)) await api.command({ type: 'note.notebook', id: note.id, mode: 'link' }); await api.showNotebook(note.id); setToolsOpen(false); }, true)}>{isNotebookNote(note) ? <BookOpen size={16} /> : <Link2 size={16} />}</button>
+        <button aria-label="转为笔记" title="转为笔记" disabled={busy || removed} onClick={() => void execute(async () => { await api.command({ type: 'note.notebook', id: note.id, mode: 'convert' }); }, true)}><FileInput size={16} /></button>
+        <button className="danger-text" aria-label="删除便签" title="删除便签" disabled={busy || removed} onClick={() => setConfirmDelete(true)}><Trash2 size={16} /></button>
       </div>
       {confirmDelete && <div className="sticky-delete-confirm"><span>{isNotebookNote(note) ? '只移除便签入口，关联笔记和正文仍保留。' : linkedTask ? '删除便签并解除关联？任务备注将保留。' : '删除这张便签？'}</span><button disabled={busy} onClick={() => setConfirmDelete(false)}>取消</button><button className="danger-text" disabled={busy} onClick={() => void execute(() => api.deleteNote(note.id))}>删除</button></div>}
     </div>}

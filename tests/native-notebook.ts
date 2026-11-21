@@ -101,7 +101,7 @@ void (async () => {
   const convertId = await evaluate(main, `window.gtodo.createNote({title:'便签转笔记',content:'保留原文'})`);
   const convertWindow = await until(() => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().includes(`note=${convertId}`)), 'convert sticky');
   await until(() => evaluate(convertWindow, '!!document.querySelector(".cm-content")'), 'convert editor');
-  await click(convertWindow, '[aria-label=便签编辑选项]'); await button(convertWindow, '转为笔记');
+  await click(convertWindow, '[aria-label=便签编辑选项]'); await click(convertWindow, 'button[aria-label=转为笔记]');
   await until(() => evaluate(main, 'document.querySelector("[aria-label=笔记标题]")?.value === "便签转笔记"'), 'convert opens notebook');
   assert.equal((await state(main)).workspace.notes.find((note: any) => note.id === convertId).values.desktop, 'none');
   await until(() => convertWindow.isDestroyed(), 'converted sticky closes');
