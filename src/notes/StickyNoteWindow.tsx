@@ -1,15 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ArrowUpRight, Check, Ellipsis, Link2, LoaderCircle, Pin, PinOff, Plus, RotateCcw, StickyNote, Trash2, X } from 'lucide-react';
-import { noteColors, type AppState, type DesktopAPI, type Note } from '../shared/model';
+import { noteColors, noteColorNames, type AppState, type DesktopAPI, type Note } from '../shared/model';
 import { flushMainDrafts, NoteDraft } from './draft';
 import DocumentEditor from '../components/DocumentEditor';
 import { linkedTaskForNote } from '../shared/note-links';
 import { isComposing } from '../components/keyboard';
 
-export const noteColorNames = {
-  yellow: '黄色', orange: '橙色', coral: '珊瑚色', rose: '粉色', purple: '紫色', indigo: '靛蓝',
-  blue: '蓝色', teal: '青色', mint: '薄荷色', green: '绿色', gray: '灰色', white: '白色',
-} satisfies Record<typeof noteColors[number], string>;
 export default function StickyNoteWindow({ id }: { id: string }) {
   const [state, setState] = useState<AppState | null>(null);
   const [error, setError] = useState('');

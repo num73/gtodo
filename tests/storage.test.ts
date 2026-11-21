@@ -7,6 +7,7 @@ import { PreferencesStore } from '../electron/preferences';
 import { nextZoom } from '../src/shared/model';
 import { fitPaneLayout } from '../src/shared/layout';
 import { temporaryDirectory } from './helpers';
+import { defaultUserPreferences } from '../src/shared/preferences';
 
 test('concurrent commands persist serially and survive a fresh application instance', async t => {
   const directory = await temporaryDirectory(t); const store = new DataStore(directory); await store.initialize();
@@ -47,7 +48,7 @@ test('folder, zoom and window preferences survive concurrent updates and a resta
     preferences.update(value => { value.window = window; }),
   ]);
   const reopened = new PreferencesStore(directory); await reopened.initialize();
-  assert.deepEqual(reopened.value, { dataPath, zoom: 150, window, paneLayout: { sidebar: 224, details: 322 }, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null } });
+  assert.deepEqual(reopened.value, { dataPath, zoom: 150, window, paneLayout: { sidebar: 224, details: 322 }, user: defaultUserPreferences, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null } });
   await assert.rejects(preferences.update(value => { value.zoom = 500; }));
   assert.equal(preferences.value.zoom, 150);
 });

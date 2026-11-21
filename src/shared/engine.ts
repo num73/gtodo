@@ -121,7 +121,7 @@ export class WorkspaceEngine {
         if (command.kind === 'task') {
           if (!command.title.trim()) throw new Error('请输入任务名称。');
           this.apply({ type: 'task.add', title: command.title, listId: 'inbox' });
-        } else this.apply({ type: 'note.add', title: command.title, content: command.content });
+        } else this.apply({ type: 'note.add', title: command.title, content: command.content, color: command.noteColor });
         const sourceId = (command.kind === 'task' ? this.state.tasks : this.state.notes).at(-1)!.id;
         this.apply({ type: 'board.card.add', content: { kind: command.kind, sourceId }, layout: command.layout }); break;
       }
@@ -175,7 +175,7 @@ export class WorkspaceEngine {
         const task = this.state.tasks.find(item => item.id === command.id && !item.values.deleted);
         if (!task) throw new Error('任务不存在。');
         if (linkedNoteForTask(this.state, task)) break;
-        const note = this.record(crypto.randomUUID(), { title: task.values.title.slice(0, 200), content: task.values.notes, color: 'yellow' as const, format: task.values.notesFormat, assets: structuredClone(task.values.notesAssets), createdAt: now, deleted: false });
+        const note = this.record(crypto.randomUUID(), { title: task.values.title.slice(0, 200), content: task.values.notes, color: command.noteColor ?? 'yellow', format: task.values.notesFormat, assets: structuredClone(task.values.notesAssets), createdAt: now, deleted: false });
         note.clocks.content = { ...task.clocks.notes }; note.clocks.format = { ...task.clocks.notesFormat }; note.clocks.assets = { ...task.clocks.notesAssets };
         this.state.notes.push(note);
         this.patch(task, { noteLink: { noteId: note.id, taskLife: { ...task.clocks.deleted }, noteLife: { ...note.clocks.deleted } } });

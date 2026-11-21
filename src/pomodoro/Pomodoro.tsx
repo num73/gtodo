@@ -1,8 +1,9 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useState } from 'react';
 import { Timer, Pause, Play, RotateCcw } from 'lucide-react';
 import type { Task } from '../shared/model';
-import { formatCountdown, phaseLabels, pomodoroPhases, type PomodoroSettings, type PomodoroSnapshot } from '../shared/pomodoro';
+import { formatCountdown, phaseLabels, pomodoroPhases, type PomodoroSnapshot } from '../shared/pomodoro';
 import { useCountdown, type PomodoroController } from './usePomodoro';
+import PomodoroSettings from './PomodoroSettings';
 
 export function PomodoroLauncher({ state, open }: { state: PomodoroSnapshot | null; open: () => void }) {
   const remaining = useCountdown(state?.session);
@@ -16,15 +17,10 @@ export default function Pomodoro({ controller, tasks }: { controller: PomodoroCo
   const { snapshot, busy, error, run } = controller;
   const remaining = useCountdown(snapshot?.session);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [draft, setDraft] = useState<PomodoroSettings | null>(snapshot?.settings ?? null);
-  useEffect(() => { if (snapshot) setDraft(snapshot.settings); }, [snapshot?.settings]);
   const session = snapshot?.session;
   const active = session?.status !== 'idle';
   const disabled = busy || snapshot?.unavailable;
   const pendingTasks = tasks.filter(task => !task.values.completed && !task.values.deleted);
-  async function saveSettings(event: FormEvent) {
-    event.preventDefault(); if (draft && await run({ type: 'configure', settings: draft })) setSettingsOpen(false);
-  }
   return <section className="pomodoro-content" aria-label="番茄钟计时">
     {snapshot && session && <div className="pomodoro-body">
       <div className="pomodoro-timer">
@@ -47,15 +43,7 @@ export default function Pomodoro({ controller, tasks }: { controller: PomodoroCo
         </select></label>
         <div className="pomodoro-stats"><span>今天 <strong>{snapshot.today.completed}</strong> 个番茄 · <strong>{Math.round(snapshot.today.minutes)}</strong> 分钟</span><span>本轮 {snapshot.cycleCompleted}/{snapshot.settings.longBreakEvery}</span></div>
         <button className="text-button pomodoro-settings-toggle" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}>时长设置</button>
-        {settingsOpen && draft && <form className="pomodoro-settings" onSubmit={saveSettings}>
-          <fieldset disabled={disabled || active}>
-            <label>专注（分钟）<input type="number" aria-label="专注分钟数" min={1} max={180} required value={Number.isNaN(draft.focusMinutes) ? '' : draft.focusMinutes} onChange={event => setDraft({ ...draft, focusMinutes: event.target.valueAsNumber })} /></label>
-            <label>短休息（分钟）<input type="number" aria-label="短休息分钟数" min={1} max={60} required value={Number.isNaN(draft.shortBreakMinutes) ? '' : draft.shortBreakMinutes} onChange={event => setDraft({ ...draft, shortBreakMinutes: event.target.valueAsNumber })} /></label>
-            <label>长休息（分钟）<input type="number" aria-label="长休息分钟数" min={1} max={60} required value={Number.isNaN(draft.longBreakMinutes) ? '' : draft.longBreakMinutes} onChange={event => setDraft({ ...draft, longBreakMinutes: event.target.valueAsNumber })} /></label>
-            <label>长休息间隔（次）<input type="number" aria-label="长休息间隔次数" min={2} max={12} required value={Number.isNaN(draft.longBreakEvery) ? '' : draft.longBreakEvery} onChange={event => setDraft({ ...draft, longBreakEvery: event.target.valueAsNumber })} /></label>
-          </fieldset>
-          {active ? <p className="setting-description">重置后可修改时长。</p> : <button className="button secondary" disabled={disabled}>保存时长</button>}
-        </form>}
+        {settingsOpen && <PomodoroSettings controller={controller} onSaved={() => setSettingsOpen(false)} />}
         <p className="pomodoro-hint">结束后手动开始下一阶段。退出或休眠时暂停。</p>
       </div>
     </div>}

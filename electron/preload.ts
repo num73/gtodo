@@ -13,6 +13,7 @@ const api: DesktopAPI = {
   openPomodoro: taskId => ipcRenderer.invoke('gtodo:pomodoro-open', taskId),
   pomodoroWindow: action => ipcRenderer.invoke('gtodo:pomodoro-window', action),
   setPaneLayout: layout => ipcRenderer.invoke('gtodo:pane-layout', layout),
+  setPreferences: patch => ipcRenderer.invoke('gtodo:preferences', patch),
   getState: () => ipcRenderer.invoke('gtodo:state'),
   command: value => ipcRenderer.invoke('gtodo:command', value),
   chooseDataFolder: () => ipcRenderer.invoke('gtodo:choose-folder'),

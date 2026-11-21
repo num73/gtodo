@@ -35,6 +35,12 @@ export type BoardLayout = z.infer<typeof boardLayoutSchema>;
 export type BoardCardValues = z.infer<typeof boardCardValuesSchema>;
 export type BoardCard = RecordItem<BoardCardValues>;
 export const defaultCardStyle = { color: '#fff3bf', textColor: '#253047', fontSize: 28, align: 'left' as const, imageFit: 'contain' as const };
+export const textBackgrounds = [
+  { name: '浅黄', color: '#fff3bf' }, { name: '浅粉', color: '#ffe3e3' },
+  { name: '浅蓝', color: '#dbeafe' }, { name: '薄荷绿', color: '#d3f9d8' },
+  { name: '淡紫', color: '#e5dbff' }, { name: '杏橙', color: '#ffe8cc' },
+  { name: '浅灰', color: '#e9ecef' }, { name: '白色', color: '#ffffff' },
+];
 export const boardImageInputSchema = z.object({
   destination: z.enum(['card', 'background']), layout: boardLayoutSchema.optional(),
 });

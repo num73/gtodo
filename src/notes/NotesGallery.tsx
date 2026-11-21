@@ -23,7 +23,7 @@ export default function NotesGallery({ state, api, close, update, toast }: {
           <footer><span>{state.noteWindows[note.id]?.pinned && <Pin size={12} />}{opened ? '已贴到桌面' : '已收起'}</span><button aria-label={`${opened ? '收起' : '显示'}便签 ${note.values.title || '未命名便签'}`} disabled={busy} onClick={() => void execute(() => api.noteWindow({ type: opened ? 'hide' : 'open', id: note.id }))}>{opened ? <EyeOff size={16} /> : <ArrowUpRight size={17} />}</button><button aria-label={`删除便签 ${note.values.title || '未命名便签'}`} disabled={busy} onClick={() => void execute(async () => { update(await api.deleteNote(note.id)); toast('便签已删除', () => { void execute(async () => { update(await api.command({ type: 'note.update', id: note.id, patch: { deleted: false } })); toast('便签已恢复'); }); }); })}><Trash2 size={15} /></button></footer>
         </article>;
       })}</div>}
-      <p className="notes-gallery-hint">收起不删除内容。未收起的便签会在下次启动时恢复。</p>
+      <p className="notes-gallery-hint">收起不删除内容。{state.preferences.restoreNotes ? '未收起的便签会在下次启动时恢复。' : '已关闭启动时恢复便签，可在设置中开启。'}</p>
       {error && <div className="notes-gallery-error" role="alert">{error}</div>}
     </div>
   </Modal>;

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { LayoutDashboard, CheckCircle2, StickyNote, Type, Image as ImageIcon, Wallpaper, Plus, Minus, Maximize, Maximize2, Minimize2, Check, ArrowUpToLine, ArrowDownToLine, X, Palette, ArrowUpRight, Search } from 'lucide-react';
 import type { AppState, Command, DesktopAPI } from '../shared/model';
-import { BOARD_SIZE, boardCardTitle, clampBoardLayout, defaultBoard, defaultCardStyle, type BoardCard as Card, type BoardCardValues, type BoardContent, type BoardImageInput, type BoardLayout, type BoardValues } from '../shared/board';
+import { BOARD_SIZE, boardCardTitle, clampBoardLayout, defaultBoard, defaultCardStyle, textBackgrounds, type BoardCard as Card, type BoardCardValues, type BoardContent, type BoardImageInput, type BoardLayout, type BoardValues } from '../shared/board';
 import { MAX_IMAGE_BYTES } from '../shared/documents';
 import { flushMainDrafts, registerMainDraft } from '../notes/draft';
 import Modal from '../components/Modal';
@@ -11,12 +11,6 @@ import BoardImage from './BoardImage';
 type Props = { state: AppState; api: DesktopAPI; update: (state: AppState) => void; toast: (text: string, undo?: () => void) => void; openTask: (id: string) => void; headingRef: RefObject<HTMLHeadingElement | null> };
 type Dialog = { kind: 'pick'; source: 'task' | 'note' } | { kind: 'source'; source: 'task' | 'note' } | { kind: 'edit'; card?: Card } | { kind: 'background' };
 type CardStyle = Pick<BoardCardValues, 'color' | 'textColor' | 'fontSize' | 'align' | 'imageFit'>;
-const textBackgrounds = [
-  { name: '浅黄', color: '#fff3bf' }, { name: '浅粉', color: '#ffe3e3' },
-  { name: '浅蓝', color: '#dbeafe' }, { name: '薄荷绿', color: '#d3f9d8' },
-  { name: '淡紫', color: '#e5dbff' }, { name: '杏橙', color: '#ffe8cc' },
-  { name: '浅灰', color: '#e9ecef' }, { name: '白色', color: '#ffffff' },
-];
 const viewKey = 'gtodo-board-view';
 function savedView(): { zoom: number; x: number; y: number } {
   try {
@@ -200,7 +194,7 @@ export default function Board({ state, api, update, toast, openTask, headingRef 
       const next = await command({ type: 'board.card.add', content: { kind: dialog.source, sourceId: id }, layout: placement() }); setDialog(null); added(next);
     })} />}
     {dialog?.kind === 'source' && <SourceEditor source={dialog.source} busy={busy} close={() => setDialog({ kind: 'pick', source: dialog.source })} save={(title, content) => void execute(async () => { const next = await command({ type: 'board.source.add', kind: dialog.source, title, content, layout: placement() }); setDialog(null); added(next); })} />}
-    {dialog?.kind === 'edit' && <CardEditor card={dialog.card} busy={busy} close={() => setDialog(null)} save={(content, style) => void execute(async () => {
+    {dialog?.kind === 'edit' && <CardEditor card={dialog.card} defaults={{ ...defaultCardStyle, color: state.preferences.boardTextBackground, textColor: state.preferences.boardTextColor, fontSize: state.preferences.boardTextFontSize }} busy={busy} close={() => setDialog(null)} save={(content, style) => void execute(async () => {
       if (dialog.card) {
         const original = dialog.card.values;
         const patch = Object.fromEntries(Object.entries(style).filter(([key, value]) => value !== original[key as keyof typeof style])) as Partial<CardStyle>;
@@ -237,10 +231,10 @@ function SourceEditor({ source, busy, close, save }: { source: 'task' | 'note'; 
     <div className="form-footer"><button type="button" className="button secondary" disabled={busy} onClick={close}>返回</button><button className="button primary" disabled={busy || !(title.trim() || (source === 'note' && content.trim()))}>创建并贴上</button></div>
   </form></Modal>;
 }
-function CardEditor({ card, busy, close, save }: { card?: Card; busy: boolean; close: () => void; save: (content: BoardContent | undefined, style: CardStyle) => void }) {
+function CardEditor({ card, defaults, busy, close, save }: { card?: Card; defaults: CardStyle; busy: boolean; close: () => void; save: (content: BoardContent | undefined, style: CardStyle) => void }) {
   const textCard = !card || card.values.content.kind === 'text';
   const [text, setText] = useState(card?.values.content.kind === 'text' ? card.values.content.text : '');
-  const [style, setStyle] = useState<CardStyle>(() => card ? { color: card.values.color, textColor: card.values.textColor, fontSize: card.values.fontSize, align: card.values.align as CardStyle['align'], imageFit: card.values.imageFit as CardStyle['imageFit'] } : { ...defaultCardStyle });
+  const [style, setStyle] = useState<CardStyle>(() => card ? { color: card.values.color, textColor: card.values.textColor, fontSize: card.values.fontSize, align: card.values.align as CardStyle['align'], imageFit: card.values.imageFit as CardStyle['imageFit'] } : { ...defaults });
   return <Modal title={!card ? '添加文字 / 标语' : textCard ? '编辑文字 / 标语' : '贴纸样式'} close={close} busy={busy}><form className="board-form" onSubmit={event => { event.preventDefault(); if (textCard && !text.trim()) return; save(textCard ? { kind: 'text', text: text.trim() } : undefined, style); }}>
     {textCard && <label>文字内容<textarea autoFocus required maxLength={10000} rows={5} placeholder="写一句鼓励自己的话，或记下灵感…" value={text} disabled={busy} onChange={event => setText(event.target.value)} /></label>}
     {textCard && <fieldset className="board-color-presets"><legend>背景预设</legend><div className="board-color-options">{textBackgrounds.map(option => <button key={option.color} type="button" aria-label={`${option.name}背景`} aria-pressed={style.color.toLowerCase() === option.color} disabled={busy} onClick={() => setStyle(value => ({ ...value, color: option.color }))}><span className="board-color-swatch" style={{ backgroundColor: option.color }}>{style.color.toLowerCase() === option.color && <Check size={16} />}</span><span>{option.name}</span></button>)}</div></fieldset>}

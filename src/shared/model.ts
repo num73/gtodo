@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { OutlookCalendarOption, OutlookStatus } from './outlook';
 import type { PaneLayout } from './layout';
+import type { UserPreferences } from './preferences';
 import { assetMapSchema, documentFormatSchema, type CreateNoteInput, type DocumentTarget } from './documents';
 import { boardValuesSchema, boardCardValuesSchema, boardContentSchema, boardLayoutSchema, boardCardPatchSchema, type Board, type BoardCard, type BoardImageInput } from './board';
 
@@ -31,6 +32,10 @@ export const taskValuesSchema = z.object({
 });
 export const stepValuesSchema = z.object({ taskId: id, title, completed: z.boolean(), deleted: z.boolean(), originId: id });
 export const noteColors = ['yellow', 'orange', 'coral', 'rose', 'purple', 'indigo', 'blue', 'teal', 'mint', 'green', 'gray', 'white'] as const;
+export const noteColorNames = {
+  yellow: '黄色', orange: '橙色', coral: '珊瑚色', rose: '粉色', purple: '紫色', indigo: '靛蓝',
+  blue: '蓝色', teal: '青色', mint: '薄荷色', green: '绿色', gray: '灰色', white: '白色',
+} satisfies Record<typeof noteColors[number], string>;
 export const noteValuesSchema = z.object({
   title: z.string().max(200), content: z.string().max(100000), color: z.enum(noteColors),
   format: documentFormatSchema.default('text'), assets: assetMapSchema.default({}),
@@ -88,12 +93,12 @@ export function nextDate(value: string, repeat: TaskValues['repeat']): string {
 export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('board.update'), patch: boardValuesSchema.partial() }),
   z.object({ type: z.literal('board.card.add'), content: boardContentSchema, layout: boardLayoutSchema.optional(), style: boardCardValuesSchema.pick({ color: true, textColor: true, fontSize: true, align: true, imageFit: true }).partial().optional() }),
-  z.object({ type: z.literal('board.source.add'), kind: z.enum(['task', 'note']), title: z.string().trim().max(200), content: z.string().max(100000), layout: boardLayoutSchema.optional() }),
+  z.object({ type: z.literal('board.source.add'), kind: z.enum(['task', 'note']), title: z.string().trim().max(200), content: z.string().max(100000), layout: boardLayoutSchema.optional(), noteColor: z.enum(noteColors).optional() }),
   z.object({ type: z.literal('board.card.update'), id, patch: boardCardPatchSchema }),
   z.object({ type: z.literal('board.card.layer'), id, front: z.boolean() }),
   z.object({ type: z.literal('task.add'), title, listId: id, myDay: nullableDate.optional(), important: z.boolean().optional(), dueDate: nullableDate.optional() }),
   z.object({ type: z.literal('task.update'), id, patch: taskValuesSchema.omit({ seriesId: true, createdAt: true, completedAt: true, notesFormat: true, notesAssets: true, noteLink: true }).partial().extend({ notesFormat: documentFormatSchema.optional(), notesAssets: assetMapSchema.optional() }) }),
-  z.object({ type: z.literal('task.link-note'), id }),
+  z.object({ type: z.literal('task.link-note'), id, noteColor: z.enum(noteColors).optional() }),
   z.object({ type: z.literal('list.add'), name: title, color: z.enum(colors) }),
   z.object({ type: z.literal('list.update'), id, patch: listValuesSchema.omit({ createdAt: true }).partial() }),
   z.object({ type: z.literal('step.add'), taskId: id, title }),
@@ -104,7 +109,7 @@ export const commandSchema = z.discriminatedUnion('type', [
 export type Command = z.infer<typeof commandSchema>;
 export interface FolderStatus { error: string | null; lastRead: string | null; notice?: string | null }
 export interface NoteWindowSettings { open: boolean; pinned: boolean; bounds?: { x: number; y: number; width: number; height: number } }
-export interface AppState { workspace: Workspace; deviceId: string; dataPath: string; notice: string | null; folder: FolderStatus; zoom: number; version: string; mainWindow: { maximized: boolean; fullScreen: boolean }; paneLayout: PaneLayout; pomodoroWindow: NoteWindowSettings; noteWindows: Record<string, NoteWindowSettings>; outlook: OutlookStatus }
+export interface AppState { workspace: Workspace; deviceId: string; dataPath: string; notice: string | null; folder: FolderStatus; zoom: number; version: string; mainWindow: { maximized: boolean; fullScreen: boolean }; paneLayout: PaneLayout; preferences: UserPreferences; pomodoroWindow: NoteWindowSettings; noteWindows: Record<string, NoteWindowSettings>; outlook: OutlookStatus }
 export const noteWindowActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('open'), id }), z.object({ type: z.literal('hide'), id }),
   z.object({ type: z.literal('pin'), id, pinned: z.boolean() }),
@@ -125,6 +130,7 @@ export interface DesktopAPI {
   openPomodoro(taskId?: string): Promise<void>;
   pomodoroWindow(action: { type: 'hide' } | { type: 'pin'; pinned: boolean }): Promise<void>;
   setPaneLayout(layout: PaneLayout): Promise<AppState>;
+  setPreferences(patch: Partial<UserPreferences>): Promise<AppState>;
   getState(): Promise<AppState>;
   command(command: Command): Promise<AppState>;
   chooseDataFolder(): Promise<AppState>;

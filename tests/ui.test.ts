@@ -10,6 +10,7 @@ import type { PomodoroSnapshot } from '../src/shared/pomodoro';
 import { defaultPaneLayout, type PaneLayout } from '../src/shared/layout';
 import { trashRecords } from '../src/shared/trash';
 import { flushMainDrafts } from '../src/notes/draft';
+import { creationDefaults, defaultUserPreferences, patchUserPreferences, startupViews, type UserPreferences } from '../src/shared/preferences';
 
 // Renderer behavior is tested in an isolated DOM, without controlling the user's preview window.
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
@@ -38,20 +39,21 @@ afterEach(() => { cleanup(); viewportWidth = 1320; });
 after(() => dom.window.close());
 async function resize(width: number) { await act(async () => { viewportWidth = width; for (const listener of mediaListeners) listener(); dom.window.dispatchEvent(new dom.window.Event('resize')); }); }
 
-async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout) {
+async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout, initialPreferences: Partial<UserPreferences> = {}) {
   const engine = new WorkspaceEngine('ui-test-device');
   let dataPath = 'isolated-test-profile'; let zoom = 100; let outlook = emptyOutlookStatus();
   const timerListeners = new Set<(state: PomodoroSnapshot) => void>();
   const stateListeners = new Set<(state: AppState) => void>();
   let timerView: ReturnType<typeof render> | null = null;
   let paneLayout: PaneLayout = { ...initialPaneLayout };
+  let preferences = { ...defaultUserPreferences, ...initialPreferences };
   let mainWindow = { maximized: false, fullScreen: false };
   const pomodoroWindow = { open: false, pinned: false };
   const timer = new PomodoroTimer({ directory: 'unused-memory-only', write: async () => {}, task: id => {
     const task = engine.state.tasks.find(task => task.id === id && !task.values.completed && !task.values.deleted);
     return task ? { id: task.id, title: task.values.title } : null;
   }, changed: value => { for (const listener of timerListeners) listener(value); } });
-  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.2.1', mainWindow: { ...mainWindow }, paneLayout: { ...paneLayout }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook });
+  const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.2.1', mainWindow: { ...mainWindow }, paneLayout: { ...paneLayout }, preferences: { ...preferences }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook });
   const publish = () => { for (const listener of stateListeners) listener(snapshot()); };
   const api: DesktopAPI = {
     getPomodoro: async () => timer.snapshot(), pomodoroCommand: command => timer.command(command),
@@ -67,8 +69,9 @@ async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout) {
       publish();
     },
     setPaneLayout: async value => { paneLayout = { ...value }; publish(); return snapshot(); },
+    setPreferences: async patch => { preferences = patchUserPreferences(preferences, patch); publish(); return snapshot(); },
     getState: async () => snapshot(),
-    command: async value => { engine.apply(value); publish(); return snapshot(); },
+    command: async value => { engine.apply(creationDefaults(value, preferences)); publish(); return snapshot(); },
     onState: callback => { stateListeners.add(callback); return () => { stateListeners.delete(callback); }; }, refreshFolder: async () => snapshot(),
     chooseDataFolder: async () => { dataPath = 'D:\\OneDrive\\GTodo'; return snapshot(); }, openDataFolder: async () => {},
     setZoom: async action => { zoom = nextZoom(zoom, action); return snapshot(); },
@@ -80,8 +83,8 @@ async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout) {
     configureOutlook: async input => { outlook = { ...outlook, enabled: input.enabled, phase: input.enabled ? 'idle' : 'off', targetName: '测试账户 / 日历 / GTodo' }; return snapshot(); },
     syncOutlook: async () => { outlook.lastSyncedAt = new Date().toISOString(); return snapshot(); },
     windowControl: () => {},
-    createNote: async input => { engine.apply({ type: 'note.add', ...input }); return engine.state.notes.at(-1)!.id; },
-    createLinkedNote: async id => { engine.apply({ type: 'task.link-note', id }); publish(); return engine.state.tasks.find(task => task.id === id)!.values.noteLink!.noteId; },
+    createNote: async input => { engine.apply(creationDefaults({ type: 'note.add', ...input }, preferences)); return engine.state.notes.at(-1)!.id; },
+    createLinkedNote: async id => { engine.apply(creationDefaults({ type: 'task.link-note', id }, preferences)); publish(); return engine.state.tasks.find(task => task.id === id)!.values.noteLink!.noteId; },
     pickBoardImage: async () => null, insertBoardImage: async () => snapshot(),
     pickDocumentImage: async () => null, captureDocumentImage: async () => null, insertDocumentImage: async () => ({ path: `assets/${'a'.repeat(64)}.png`, name: '图片.png' }), showDocumentFile: async () => {}, openLink: async () => {},
     noteWindow: async () => {}, deleteNote: async id => { engine.apply({ type: 'note.update', id, patch: { deleted: true } }); publish(); return snapshot(); },
@@ -89,7 +92,7 @@ async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout) {
   };
   window.gtodo = api;
   render(React.createElement(App));
-  await screen.findByRole('heading', { name: '我的一天' });
+  await screen.findByRole('heading', { name: startupViews.find(view => view.value === preferences.startupView)!.label });
   const user = userEvent.setup({ document: dom.window.document });
   const add = async (title: string) => {
     await user.type(screen.getByRole('textbox', { name: '添加任务' }), title);
@@ -98,6 +101,104 @@ async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout) {
   };
   return { engine, api, user, add, timer, setMainWindow: (value: typeof mainWindow) => { mainWindow = value; publish(); } };
 }
+
+test('settings startup preferences persist without navigating away from the current page', async () => {
+  const { user, api } = await mount(defaultPaneLayout, { startupView: 'board' });
+  assert.ok(screen.getByRole('region', { name: '自由看板' }));
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.selectOptions(screen.getByRole('combobox', { name: '启动默认页面' }), 'all');
+  await user.selectOptions(screen.getByRole('combobox', { name: '关闭主窗口时' }), 'background');
+  await user.click(screen.getByRole('checkbox', { name: '启动时恢复便签' }));
+  await user.click(screen.getByRole('checkbox', { name: '启动时恢复番茄钟窗口' }));
+  const prefs = (await api.getState()).preferences;
+  assert.equal(prefs.startupView, 'all'); assert.equal(prefs.closeAction, 'background');
+  assert.equal(prefs.restoreNotes, false); assert.equal(prefs.restorePomodoro, false);
+  await user.click(screen.getByRole('button', { name: '关闭对话框' }));
+  assert.ok(screen.getByRole('heading', { name: '我的看板' }));
+  cleanup(); render(React.createElement(App));
+  await screen.findByRole('heading', { name: '全部任务' });
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  assert.equal((screen.getByRole('checkbox', { name: '启动时恢复便签' }) as HTMLInputElement).checked, false);
+});
+
+test('settings reset pane widths immediately and preserve saved values after a failed preference write', async () => {
+  const { user, api } = await mount({ sidebar: 310, details: 440 });
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  const original = api.setPreferences;
+  api.setPreferences = async () => { throw new Error('设置写入失败'); };
+  await user.click(screen.getByRole('checkbox', { name: '启动时恢复便签' }));
+  await screen.findByText('设置写入失败');
+  assert.equal((screen.getByRole('checkbox', { name: '启动时恢复便签' }) as HTMLInputElement).checked, true);
+  api.setPreferences = original;
+  await user.click(screen.getByRole('tab', { name: '显示与样式' }));
+  await user.click(screen.getByRole('button', { name: '重置分栏宽度' }));
+  await waitFor(async () => assert.deepEqual((await api.getState()).paneLayout, defaultPaneLayout));
+  assert.equal((document.querySelector('.app-body') as HTMLElement).style.getPropertyValue('--sidebar-width'), '224px');
+  await user.click(screen.getByRole('tab', { name: '常规' }));
+  await user.keyboard('{ArrowRight}');
+  assert.equal(screen.getByRole('tab', { name: '显示与样式' }).getAttribute('aria-selected'), 'true');
+});
+
+test('default styles are used by new board text and notes while existing cards retain their appearance', async () => {
+  const { user, api, engine } = await mount();
+  await act(async () => { await api.command({ type: 'board.card.add', content: { kind: 'text', text: '已有文字' }, style: { color: '#ffffff', fontSize: 20 } }); });
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.click(screen.getByRole('tab', { name: '显示与样式' }));
+  await user.selectOptions(screen.getByRole('combobox', { name: '新便签默认颜色' }), 'blue');
+  await user.click(screen.getByRole('button', { name: '默认浅蓝背景' }));
+  await user.selectOptions(screen.getByRole('combobox', { name: '看板文字默认字号' }), '40');
+  await user.click(screen.getByRole('button', { name: '看板文字默认颜色' }));
+  fireEvent.change(screen.getByLabelText('自定义默认颜色'), { target: { value: '#123456' } });
+  await user.click(screen.getByRole('button', { name: '保存颜色' }));
+  await waitFor(async () => assert.equal((await api.getState()).preferences.boardTextColor, '#123456'));
+  await user.click(screen.getByRole('button', { name: '看板文字默认背景' }));
+  fireEvent.change(screen.getByLabelText('自定义默认颜色'), { target: { value: '#654321' } });
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  assert.equal((await api.getState()).preferences.boardTextBackground, '#dbeafe');
+  await user.click(screen.getByRole('button', { name: '关闭对话框' }));
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  await user.click(screen.getByRole('button', { name: '文字 / 标语' }));
+  assert.equal((screen.getByRole('spinbutton', { name: '字号' }) as HTMLInputElement).value, '40');
+  assert.equal(screen.getByRole('button', { name: '浅蓝背景' }).getAttribute('aria-pressed'), 'true');
+  await user.type(screen.getByRole('textbox', { name: '文字内容' }), '新文字');
+  await user.click(screen.getByRole('button', { name: '贴到看板' }));
+  assert.equal(engine.state.boardCards[0].values.color, '#ffffff'); assert.equal(engine.state.boardCards[0].values.fontSize, 20);
+  assert.equal(engine.state.boardCards[1].values.color, '#dbeafe'); assert.equal(engine.state.boardCards[1].values.fontSize, 40);
+  assert.equal(engine.state.boardCards[1].values.textColor, '#123456');
+  await act(async () => { await api.createNote(); });
+  assert.equal(engine.state.notes[0].values.color, 'blue');
+});
+
+test('completed task defaults collapse ordinary lists but never hide search results', async () => {
+  const { user, api, engine, add } = await mount(defaultPaneLayout, { showCompleted: false });
+  await add('完成后仍可搜索');
+  await act(async () => { await api.command({ type: 'task.update', id: engine.state.tasks[0].id, patch: { completed: true } }); });
+  assert.equal(screen.queryByText('完成后仍可搜索', { exact: true }), null);
+  assert.equal(document.querySelector('.completed-heading')?.getAttribute('aria-expanded'), 'false');
+  await user.type(screen.getByRole('textbox', { name: '搜索任务' }), '完成后仍可搜索');
+  await screen.findByText('完成后仍可搜索', { exact: true });
+});
+
+test('central timer settings retain edits through ticks and category changes and do not reconfigure an active timer', async () => {
+  const { user, api, timer } = await mount();
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.click(screen.getByRole('tab', { name: '专注与提醒' }));
+  await user.click(screen.getByRole('checkbox', { name: '任务提醒通知' }));
+  await user.click(screen.getByRole('checkbox', { name: '番茄钟结束提醒' }));
+  assert.equal((await api.getState()).preferences.taskNotifications, false);
+  assert.equal((await api.getState()).preferences.pomodoroNotifications, false);
+  const focus = screen.getByRole('spinbutton', { name: '专注分钟数' });
+  await user.clear(focus); await user.type(focus, '45');
+  await act(async () => { await timer.command({ type: 'select', phase: 'shortBreak' }); });
+  await user.click(screen.getByRole('tab', { name: '常规' }));
+  await user.click(screen.getByRole('tab', { name: '专注与提醒' }));
+  assert.equal((screen.getByRole('spinbutton', { name: '专注分钟数' }) as HTMLInputElement).value, '45');
+  await user.click(screen.getByRole('button', { name: '保存时长' }));
+  await waitFor(() => assert.equal(timer.snapshot().settings.focusMinutes, 45));
+  await act(async () => { await timer.command({ type: 'start' }); });
+  assert.equal((screen.getByRole('spinbutton', { name: '专注分钟数' }) as HTMLInputElement).closest('fieldset')!.disabled, true);
+  assert.equal(screen.queryByRole('button', { name: '保存时长' }), null);
+});
 
 test('window button follows native maximize, restore and full-screen state', async () => {
   const { user, api, setMainWindow } = await mount();
@@ -372,6 +473,7 @@ test('settings recycle bin restores records and requires confirmation before per
   const { api, engine, user, add } = await mount(); await add('回收站中的任务');
   await act(async () => { await api.command({ type: 'task.update', id: engine.state.tasks[0].id, patch: { deleted: true, notes: '回收站备注预览' } }); });
   await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.click(screen.getByRole('tab', { name: '数据与同步' }));
   await user.click(screen.getByRole('button', { name: '打开回收站' }));
   await screen.findByRole('article', { name: '任务：回收站中的任务' });
   assert.ok(screen.getByText('回收站备注预览'));
@@ -398,6 +500,7 @@ test('recycle bin keeps failed operations visible and allows retrying residual f
   api.getTrash = async () => ({ items: trashRecords(engine.state), residualBytes: residual ? 2048 : 0, residualFiles: residual ? 1 : 0, error: null });
   api.purgeTrash = async targets => { calls++; if (calls === 1) throw new Error('文件夹不可用'); assert.equal(targets.length, 0); residual = false; return { freedBytes: 2048, error: null }; };
   await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.click(screen.getByRole('tab', { name: '数据与同步' }));
   await user.click(screen.getByRole('button', { name: '打开回收站' }));
   await screen.findByRole('button', { name: '清理残留文件' });
   await user.click(screen.getByRole('button', { name: '清理残留文件' }));
@@ -859,8 +962,10 @@ test('settings choose a local folder and persist the selected zoom without a clo
   const { user } = await mount();
   await user.click(screen.getByRole('button', { name: '打开设置' }));
   assert.equal(screen.queryByLabelText('应用 Client ID'), null);
+  await user.click(screen.getByRole('tab', { name: '数据与同步' }));
   await user.click(screen.getByRole('button', { name: '选择文件夹' }));
   await waitFor(() => assert.equal(screen.getByLabelText('当前数据文件夹').textContent, 'D:\\OneDrive\\GTodo'));
+  await user.click(screen.getByRole('tab', { name: '显示与样式' }));
   await user.selectOptions(screen.getByRole('combobox', { name: '界面缩放比例' }), '150');
   await waitFor(() => assert.equal((screen.getByRole('combobox', { name: '界面缩放比例' }) as HTMLSelectElement).value, '150'));
   await user.click(screen.getByRole('button', { name: '恢复默认缩放' }));
@@ -883,6 +988,7 @@ test('Outlook settings require explicit enable, show sync failures, and preserve
   const { api, user } = await mount(); let enables = 0; const configure = api.configureOutlook;
   api.configureOutlook = async input => { if (input.enabled) enables++; return configure(input); };
   await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.click(screen.getByRole('tab', { name: '数据与同步' }));
   await user.click(screen.getByRole('button', { name: '读取 Outlook 日历' }));
   await screen.findByRole('combobox', { name: 'Outlook 账户日历' }); assert.equal(enables, 0);
   await user.click(screen.getByRole('button', { name: '开启同步' }));

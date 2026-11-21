@@ -24,6 +24,7 @@ export class NoteWindows {
     return [...this.windows].find(([, window]) => !window.isDestroyed() && window.webContents === sender)?.[0];
   }
   hasVisible() { return [...this.windows.values()].some(window => !window.isDestroyed() && window.isVisible()); }
+  isVisible(id: string) { const window = this.windows.get(id); return !!window && !window.isDestroyed() && window.isVisible(); }
   private getNote(id: string) { return this.options.workspace().notes.find(note => note.id === id); }
   private async saveBounds(id: string, window: BrowserWindow) {
     if (window.isDestroyed()) return;

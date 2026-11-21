@@ -41,6 +41,7 @@ export default function App() {
     void flushMainDrafts().then(() => api.noteFlushed(requestId, true), () => api.noteFlushed(requestId, false)).catch(() => {});
   }), [api]);
   const [state, setState] = useState<AppState | null>(null);
+  const initialViewLoaded = useRef(false);
   const [loadError, setLoadError] = useState('');
   const [view, setView] = useState<View>('day');
   const [query, setQuery] = useState('');
@@ -99,14 +100,20 @@ export default function App() {
   useEffect(() => {
     if (!api) { setLoadError('请打开 GTodo 桌面应用。浏览器预览无法访问本地数据文件夹。'); return; }
     let alive = true;
-    const removeListener = api.onState(value => { if (alive) setState(value); });
-    api.getState().then(value => { if (alive) setState(value); }).catch(error => { if (alive) setLoadError(String(error)); });
+    const receive = (value: AppState) => {
+      if (!alive) return;
+      if (!initialViewLoaded.current) { initialViewLoaded.current = true; setView(value.preferences.startupView); }
+      setState(value);
+    };
+    const removeListener = api.onState(receive);
+    api.getState().then(receive).catch(error => { if (alive) setLoadError(String(error)); });
     return () => { alive = false; removeListener(); };
   }, [api]);
   useEffect(() => setSidebarOpen(false), [compactNavigation]);
+  useEffect(() => { if (state) setShowCompleted(state.preferences.showCompleted); }, [state?.preferences.showCompleted]);
+  useEffect(() => { if (state) setPaneLayout(state.paneLayout); }, [state?.paneLayout.sidebar, state?.paneLayout.details]);
   useEffect(() => {
     if (!state) return;
-    setPaneLayout(state.paneLayout);
     const element = bodyRef.current;
     const measure = () => setBodyWidth(element?.clientWidth || window.innerWidth);
     measure(); window.addEventListener('resize', measure);
@@ -338,7 +345,7 @@ export default function App() {
       {inlineDetails && <PaneDivider label="调整任务详情宽度" controls="task-details" value={fittedPanes.details} min={paneLimits.details.min} max={detailsMax} defaultValue={defaultPaneLayout.details} direction={-1} onChange={value => changePane('details', value)} onCommit={value => savePane('details', value)} />}
       {selected && <TaskDetails key={selected.id} task={selected} lists={lists} steps={state.workspace.steps.filter(step => step.values.taskId === selected.id && !step.values.deleted)} dispatch={dispatch} close={() => selectTask(null)} remove={task => void removeTask(task)} overlay={overlayDetails} createLinkedNote={createLinkedDesktopNote} linkedNoteId={linkedNoteForTask(state.workspace, selected)?.id} focusTask={openPomodoro} toast={notify} />}
     </div>
-    {settings && <Settings state={state} api={api!} close={() => setSettings(false)} update={setState} toast={notify} />}
+    {settings && <Settings state={state} api={api!} pomodoro={pomodoro} close={() => setSettings(false)} update={setState} toast={notify} />}
     {notesOpen && <NotesGallery state={state} api={api!} close={() => setNotesOpen(false)} update={setState} toast={notify} />}
     {listDialog && <Modal title={confirmListDelete ? '删除清单' : listDialog === 'new' ? '新建清单' : '编辑清单'} close={() => confirmListDelete ? setConfirmListDelete(false) : setListDialog(null)} busy={listBusy}>
       {confirmListDelete && listDialog !== 'new' ? <div className="list-form">

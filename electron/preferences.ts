@@ -5,6 +5,7 @@ import { zoomSteps } from '../src/shared/model';
 import { atomicWrite } from './storage';
 import { outlookTargetSchema } from './outlook-bridge';
 import { defaultPaneLayout, paneLayoutSchema } from '../src/shared/layout';
+import { defaultUserPreferences, userPreferencesSchema } from '../src/shared/preferences';
 
 export const windowBoundsSchema = z.object({
   x: z.number().int(), y: z.number().int(), width: z.number().int().min(360).max(20000),
@@ -15,6 +16,7 @@ const schema = z.object({
   zoom: z.number().refine(value => zoomSteps.includes(value as typeof zoomSteps[number])),
   window: windowBoundsSchema.optional(),
   paneLayout: paneLayoutSchema.default(defaultPaneLayout),
+  user: userPreferencesSchema.default(defaultUserPreferences),
   pomodoroWindow: z.object({
     open: z.boolean(), pinned: z.boolean(), bounds: z.object({
       x: z.number().int(), y: z.number().int(), width: z.number().int().min(280).max(20000), height: z.number().int().min(320).max(20000),
@@ -34,7 +36,7 @@ export class PreferencesStore {
   readonly file: string;
   constructor(readonly directory: string) {
     this.file = path.join(directory, 'preferences.json');
-    this.value = { dataPath: path.join(directory, 'data'), zoom: 100, paneLayout: { ...defaultPaneLayout }, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null } };
+    this.value = { dataPath: path.join(directory, 'data'), zoom: 100, paneLayout: { ...defaultPaneLayout }, user: { ...defaultUserPreferences }, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null } };
   }
   async initialize() {
     try { this.value = schema.parse(JSON.parse(await readFile(this.file, 'utf8'))); }
@@ -44,7 +46,7 @@ export class PreferencesStore {
   }
   update(change: (value: Preferences) => void) {
     const operation = this.queue.then(async () => {
-      const next = structuredClone(this.value); change(next); schema.parse(next);
+      const draft = structuredClone(this.value); change(draft); const next = schema.parse(draft);
       await atomicWrite(this.file, JSON.stringify(next, null, 2)); this.value = next;
     });
     this.queue = operation.catch(() => {}); return operation;

@@ -24,6 +24,7 @@ import { trashTargetSchema, trashTargetsSchema } from '../src/shared/trash';
 import { ScreenCapture } from './screen-capture';
 import { APP_USER_MODEL_ID, taskbarDetails } from './taskbar';
 import { boardImageInputSchema } from '../src/shared/board';
+import { creationDefaults, patchUserPreferences } from '../src/shared/preferences';
 
 app.setName('GTodo');
 app.setAppUserModelId(APP_USER_MODEL_ID);
@@ -61,8 +62,10 @@ let quitting = false;
 const devURL = !app.isPackaged && process.env.GTODO_DEV_URL === 'http://127.0.0.1:5173' ? process.env.GTODO_DEV_URL : null;
 function state(): AppState {
   const mainWindow = window && !window.isDestroyed() ? { maximized: window.isMaximized(), fullScreen: window.isFullScreen() } : { maximized: false, fullScreen: false };
+  const noteWindows = structuredClone(preferences.value.noteWindows);
+  for (const [id, settings] of Object.entries(noteWindows)) settings.open = !!notes?.isVisible(id);
   return { workspace: structuredClone(store.engine.state), deviceId: store.engine.deviceId, dataPath: folders.directory,
-    notice: store.notice, folder: { ...folders.status }, zoom: preferences.value.zoom, version: app.getVersion(), mainWindow, paneLayout: { ...preferences.value.paneLayout }, pomodoroWindow: structuredClone(preferences.value.pomodoroWindow), noteWindows: structuredClone(preferences.value.noteWindows), outlook: outlook?.snapshot() ?? emptyOutlookStatus() };
+    notice: store.notice, folder: { ...folders.status }, zoom: preferences.value.zoom, version: app.getVersion(), mainWindow, preferences: { ...preferences.value.user }, paneLayout: { ...preferences.value.paneLayout }, pomodoroWindow: { ...structuredClone(preferences.value.pomodoroWindow), open: !!pomodoroWindow?.hasVisible() }, noteWindows, outlook: outlook?.snapshot() ?? emptyOutlookStatus() };
 }
 function changed() {
   const current = state();
@@ -92,7 +95,7 @@ function showPomodoro() {
 }
 async function createNote(input?: CreateNoteInput) {
   let id = '';
-  const command = commandSchema.parse({ ...input, type: 'note.add' });
+  const command = creationDefaults(commandSchema.parse({ ...input, type: 'note.add' }), preferences.value.user);
   if (command.type !== 'note.add') throw new Error('便签请求无效。');
   await folders.update(engine => {
     const assets = input?.source ? documentEntry(engine.state, input.source).assets : {};
@@ -101,7 +104,7 @@ async function createNote(input?: CreateNoteInput) {
   await notes.open(id); return id;
 }
 async function applyCommand(command: Command) {
-  await applyCommandWithDrafts(command, {
+  await applyCommandWithDrafts(creationDefaults(command, preferences.value.user), {
     workspace: () => store.engine.state,
     flushMain: () => mainRendererReady ? notes.flushWindow(window) : Promise.resolve(true),
     withSavedNote: (id, action) => notes.withSaved(id, action),
@@ -218,7 +221,8 @@ function createWindow() {
     rememberWindow();
     if (quitting) return;
     event.preventDefault();
-    if (notes?.hasVisible() || pomodoroWindow?.hasVisible() || preferences.value.outlook.enabled || pomodoro?.isActive()) window?.hide(); else app.quit();
+    const action = preferences.value.user.closeAction;
+    if (action === 'background' || (action === 'auto' && (notes?.hasVisible() || pomodoroWindow?.hasVisible() || preferences.value.outlook.enabled || pomodoro?.isActive()))) window?.hide(); else app.quit();
   });
   window.on('closed', () => { window = null; });
   if (saved?.maximized) window.maximize();
@@ -283,6 +287,7 @@ async function initialize() {
     pomodoroWindow?.send('gtodo:pomodoro-changed', timer);
     updateTray();
   }, completed: completion => {
+    if (!preferences.value.user.pomodoroNotifications) return;
     const title = `GTodo · ${phaseLabels[completion.phase]}结束`;
     const body = completion.phase === 'focus' ? `${completion.taskTitle ? `${completion.taskTitle}\n` : ''}休息一下。准备好后开始休息计时。` : '休息结束，可以开始下一次专注。';
     if (Notification.isSupported()) {
@@ -309,6 +314,11 @@ async function initialize() {
     const layout = paneLayoutSchema.parse(value);
     await preferences.update(value => { value.paneLayout = layout; }); changed(); return state();
   });
+  handle('gtodo:preferences', async patch => {
+    await preferences.update(value => { value.user = patchUserPreferences(value.user, patch); });
+    if (!preferences.value.user.pomodoroNotifications) { pomodoroNotification?.close(); window?.flashFrame(false); }
+    changed(); return state();
+  });
   handle('gtodo:state', (_value, event) => {
     if (event.sender === window?.webContents) {
       mainRendererReady = true;
@@ -325,7 +335,7 @@ async function initialize() {
     await applyCommand(command); return state();
   }, true);
   handle('gtodo:note-link', async value => {
-    const command = commandSchema.parse({ type: 'task.link-note', id: value });
+    const command = creationDefaults(commandSchema.parse({ type: 'task.link-note', id: value }), preferences.value.user);
     if (command.type !== 'task.link-note') throw new Error('关联请求无效。');
     if (mainRendererReady && !await notes.flushWindow(window)) throw new Error('任务备注尚未保存，请重试。');
     let id = '';
@@ -491,11 +501,11 @@ async function initialize() {
     folderReady = true;
     diagnostics.report('startup-folder-ready', { elapsedMs: Math.round(process.uptime() * 1000), durationMs: Math.round(performance.now() - folderStarted) });
     if (quitting) return;
-    if (await notes.restore()) {
+    if (preferences.value.user.restoreNotes && await notes.restore()) {
       store.notice = [store.notice, '部分便签未能打开，内容已保留，可在“桌面便签”中重新打开。'].filter(Boolean).join('\n');
       changed();
     }
-    if (preferences.value.pomodoroWindow.open) {
+    if (preferences.value.user.restorePomodoro && preferences.value.pomodoroWindow.open) {
       try { await pomodoroWindow!.open(false); }
       catch { store.notice = '番茄钟窗口未能恢复，可从左侧栏重新打开。'; changed(); }
     }
@@ -519,6 +529,7 @@ async function initialize() {
       const reminder = task.values.reminder; const key = `${task.id}:${reminder}`;
       if (!reminder || task.values.completed || task.values.deleted || Date.parse(reminder) > Date.now() || notified.has(key)) continue;
       notified.add(key);
+      if (!preferences.value.user.taskNotifications) continue;
       if (Notification.isSupported()) {
         const notification = new Notification({ title: 'GTodo · 任务提醒', body: task.values.title });
         notification.on('click', () => { window?.restore(); window?.show(); window?.focus(); }); notification.show();

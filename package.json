@@ -17,6 +17,7 @@
     "test:data": "node scripts/test-workspace-actions-native.mjs",
     "test:window": "node scripts/test-window-layout-native.mjs",
     "test:board": "node scripts/test-board-native.mjs",
+    "test:settings": "node scripts/test-settings-native.mjs",
     "test:capture": "node scripts/test-screen-capture-native.mjs",
     "test:pomodoro-layout": "node scripts/test-pomodoro-layout.mjs",
     "test:taskbar": "node scripts/test-taskbar-native.mjs",
