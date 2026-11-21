@@ -120,6 +120,7 @@ void (async () => {
   await until(() => evaluate(main, '[...document.querySelectorAll("button")].some(b=>b.textContent === "初始化 Git 并启用" && !b.disabled)'), 'git installed');
   await fill(main, '[aria-label="Git 提交用户名"]', 'GTodo QA'); await fill(main, '[aria-label="Git 提交邮箱"]', 'qa@example.invalid');
   await button(main, '初始化 Git 并启用'); await until(async () => (await state(main)).gitEnabled, 'git enabled');
+  await until(() => evaluate(main, `!!document.querySelector('button[aria-label="Git 同步菜单"]') && !document.querySelector('[aria-label=关闭对话框]').disabled`), 'git configuration published and controls enabled');
   await shot(main, 'git-settings'); await click(main, '[aria-label=关闭对话框]'); await click(main, 'button[aria-label="Git 同步菜单"]');
   await until(() => evaluate(main, '[...document.querySelectorAll(".git-popover button")].some(b=>b.textContent === "Add · 暂存" && !b.disabled)'), 'git status');
   await button(main, 'Add · 暂存'); await until(() => evaluate(main, 'document.querySelector(".git-popover [role=status]")?.textContent === "暂存完成"'), 'git add');

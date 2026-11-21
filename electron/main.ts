@@ -28,6 +28,7 @@ import { boardImageInputSchema } from '../src/shared/board';
 import { creationDefaults, patchUserPreferences } from '../src/shared/preferences';
 import { GitSync } from './git-sync';
 import { gitActionSchema, gitConfigureSchema } from '../src/shared/git';
+import { documentHistory } from '../src/shared/document-history';
 
 app.setName('GTodo');
 app.setAppUserModelId(APP_USER_MODEL_ID);
@@ -68,7 +69,9 @@ function state(): AppState {
   const mainWindow = window && !window.isDestroyed() ? { maximized: window.isMaximized(), fullScreen: window.isFullScreen() } : { maximized: false, fullScreen: false };
   const noteWindows = structuredClone(preferences.value.noteWindows);
   for (const [id, settings] of Object.entries(noteWindows)) settings.open = !!notes?.isVisible(id);
-  return { workspace: structuredClone(store.engine.state), deviceId: store.engine.deviceId, dataPath: folders.directory, notebookRequest, gitEnabled: preferences.value.git.enabled,
+  // Historical bodies are fetched for a single document on demand. Broadcasting
+  // them with every keystroke would multiply memory use across sticky windows.
+  return { workspace: structuredClone({ ...store.engine.state, documentRevisions: [] }), deviceId: store.engine.deviceId, dataPath: folders.directory, notebookRequest, gitEnabled: preferences.value.git.enabled,
     notice: store.notice, folder: { ...folders.status }, zoom: preferences.value.zoom, version: app.getVersion(), mainWindow, preferences: { ...preferences.value.user }, paneLayout: { ...preferences.value.paneLayout }, pomodoroWindow: { ...structuredClone(preferences.value.pomodoroWindow), open: !!pomodoroWindow?.hasVisible() }, noteWindows, outlook: outlook?.snapshot() ?? emptyOutlookStatus() };
 }
 function changed() {
@@ -246,7 +249,7 @@ async function initialize() {
     if (url.hostname === 'app' && url.pathname.startsWith('/board-media/')) {
       try {
         const data = await folders.documents.readBoardImage(folders.directory, store.engine.state, decodeURIComponent(url.pathname.slice('/board-media/'.length)));
-        return new Response(data.bytes, { headers: { 'Content-Type': `image/${data.type === 'jpg' ? 'jpeg' : data.type}`, 'Cache-Control': 'no-store' } });
+        return new Response(new Uint8Array(data.bytes), { headers: { 'Content-Type': `image/${data.type === 'jpg' ? 'jpeg' : data.type}`, 'Cache-Control': 'no-store' } });
       } catch { return new Response('Image unavailable', { status: 404, headers: { 'Cache-Control': 'no-store' } }); }
     }
     if (url.hostname === 'app' && url.pathname.startsWith('/media/')) {
@@ -254,8 +257,9 @@ async function initialize() {
         const parts = url.pathname.split('/').slice(2).map(decodeURIComponent);
         if (parts.length !== 3) return new Response('Not found', { status: 404 });
         const target = documentTargetSchema.parse({ kind: parts[0], id: parts[1] });
-        const data = await folders.documents.readImage(folders.directory, store.engine.state, target, `assets/${parts[2]}`);
-        return new Response(data.bytes, { headers: { 'Content-Type': `image/${data.type === 'jpg' ? 'jpeg' : data.type}`, 'Cache-Control': 'no-store' } });
+        const relative = parts[2].startsWith('../../../assets/') ? parts[2] : `assets/${parts[2]}`;
+        const data = await folders.documents.readImage(folders.directory, store.engine.state, target, relative, url.searchParams.get('v') ?? undefined);
+        return new Response(new Uint8Array(data.bytes), { headers: { 'Content-Type': `image/${data.type === 'jpg' ? 'jpeg' : data.type}`, 'Cache-Control': 'no-store' } });
       } catch { return new Response('Image unavailable', { status: 404, headers: { 'Cache-Control': 'no-store' } }); }
     }
     const file = path.resolve(root, `.${decodeURIComponent(url.pathname)}`);
@@ -368,6 +372,19 @@ async function initialize() {
     }
     documentEntry(store.engine.state, target);
   }
+  handle('gtodo:document-history', async (value, event) => {
+    const target = documentTargetSchema.parse(value); checkDocumentOwner(event, target);
+    const entry = documentEntry(store.engine.state, target);
+    return documentHistory(store.engine.state, entry);
+  }, true);
+  handle('gtodo:document-restore', async (value, event) => {
+    const input = z.object({ target: documentTargetSchema, versionId: z.string().min(1).max(512) }).parse(value);
+    checkDocumentOwner(event, input.target);
+    await withSavedData('还原历史版本', () => folders.update(engine => {
+      const entry = documentEntry(engine.state, input.target); engine.restoreDocumentVersion(entry, input.versionId);
+    }));
+    return state();
+  }, true);
   handle('gtodo:board-image-pick', async (value, event) => {
     const input = boardImageInputSchema.parse(value);
     const owner = BrowserWindow.fromWebContents(event.sender)!;
@@ -465,7 +482,7 @@ async function initialize() {
     return state();
   });
   handle('gtodo:open-folder', async () => { const error = await shell.openPath(folders.directory); if (error) throw new Error('无法打开数据文件夹，请检查路径是否存在。'); });
-  handle('gtodo:refresh-folder', async () => { await folders.refresh(); return state(); });
+  handle('gtodo:refresh-folder', async () => { await folders.refresh(true); return state(); });
   handle('gtodo:trash', async () => { await initialFolderRead; return folders.getTrash(); });
   handle('gtodo:trash-restore', async value => { await folders.restoreTrash(trashTargetSchema.parse(value)); return state(); });
   handle('gtodo:trash-purge', async value => {
@@ -490,15 +507,16 @@ async function initialize() {
     await setZoom(action); return state();
   });
   handle('gtodo:export', async () => {
-    const result = await dialog.showSaveDialog(window!, { title: '导出 GTodo 备份', defaultPath: `GTodo-备份-${localDate()}.json`, filters: [{ name: 'GTodo 备份', extensions: ['json'] }] });
+    const result = await dialog.showSaveDialog(window!, { title: '导出 GTodo 备份', defaultPath: `GTodo-备份-${localDate()}.zip`, filters: [{ name: 'GTodo 完整备份', extensions: ['zip'] }, { name: 'JSON 备份', extensions: ['json'] }] });
     if (result.canceled || !result.filePath) return false;
     return withSavedData('导出备份', async () => {
-      await atomicWrite(result.filePath!, await folders.exportBackup()); return true;
+      await folders.exportBackupTo(result.filePath!); return true;
     });
   });
   handle('gtodo:import', async () => {
-    const result = await dialog.showOpenDialog(window!, { title: '导入并合并 GTodo 备份', properties: ['openFile'], filters: [{ name: 'GTodo 备份', extensions: ['json'] }] });
+    const result = await dialog.showOpenDialog(window!, { title: '导入并合并 GTodo 备份', properties: ['openFile'], filters: [{ name: 'GTodo 备份', extensions: ['zip', 'json'] }] });
     if (result.canceled || !result.filePaths[0]) return state();
+    if (path.extname(result.filePaths[0]).toLowerCase() === '.zip') { await withSavedData('导入备份', () => folders.importArchive(result.filePaths[0])); return state(); }
     if ((await stat(result.filePaths[0])).size > MAX_BACKUP_BYTES) throw new Error('备份文件超过 160 MB。');
     let imported;
     let attachments;

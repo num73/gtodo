@@ -3,6 +3,8 @@ import type { DesktopAPI, AppState } from '../src/shared/model';
 import type { PomodoroSnapshot } from '../src/shared/pomodoro';
 
 const api: DesktopAPI = {
+  getDocumentHistory: target => ipcRenderer.invoke('gtodo:document-history', target),
+  restoreDocumentVersion: (target, versionId) => ipcRenderer.invoke('gtodo:document-restore', { target, versionId }),
   getGitStatus: () => ipcRenderer.invoke('gtodo:git-status'),
   configureGit: input => ipcRenderer.invoke('gtodo:git-configure', input),
   gitAction: input => ipcRenderer.invoke('gtodo:git-action', input),

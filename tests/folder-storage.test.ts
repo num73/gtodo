@@ -8,7 +8,7 @@ import { FolderStorage } from '../electron/folder-storage';
 import { DocumentFiles } from '../electron/document-files';
 import { WorkspaceEngine } from '../src/shared/engine';
 import { parseWorkspace } from '../src/shared/model';
-import { temporaryDirectory } from './helpers';
+import { temporaryDirectory, transferSnapshot, readFolderSnapshot } from './helpers';
 
 async function device(t: TestContext) {
   const root = await temporaryDirectory(t);
@@ -18,7 +18,7 @@ async function device(t: TestContext) {
   return { root, local, preferences, folder };
 }
 async function transfer(source: FolderStorage, destination: FolderStorage) {
-  await copyFile(source.ownFile, path.join(destination.directory, path.basename(source.ownFile)));
+  await transferSnapshot(source.ownFile, destination.directory);
 }
 test('editing and quitting during the first folder scan preserves both incoming and local changes', async t => {
   const a = await device(t);
@@ -52,7 +52,7 @@ test('editing and quitting during the first folder scan preserves both incoming 
   const saved = new DataStore(a.root); await saved.initialize();
   assert.equal(saved.engine.state.tasks[0].values.title, 'Incoming title');
   assert.equal(saved.engine.state.tasks[0].values.notes, 'Early local edit');
-  const snapshot = parseWorkspace(JSON.parse(await readFile(folder.ownFile, 'utf8')));
+  const snapshot = (await readFolderSnapshot(folder.ownFile));
   assert.equal(snapshot.tasks[0].values.notes, 'Early local edit');
 });
 test('upgrading keeps old tasks and device identity while exporting a folder snapshot', async t => {
@@ -62,7 +62,7 @@ test('upgrading keeps old tasks and device identity while exporting a folder sna
   const preferences = new PreferencesStore(root); await preferences.initialize();
   const folder = new FolderStorage(reopened, preferences); await folder.initialize();
   assert.equal(reopened.engine.deviceId, old.engine.deviceId);
-  assert.equal(parseWorkspace(JSON.parse(await readFile(folder.ownFile, 'utf8'))).tasks[0].values.title, '旧版本任务');
+  assert.equal((await readFolderSnapshot(folder.ownFile)).tasks[0].values.title, '旧版本任务');
 });
 test('two folder replicas merge offline edits and deletion without sharing a device identity', async t => {
   const a = await device(t); const b = await device(t);
@@ -107,7 +107,7 @@ test('unavailable directory preserves edits in the local cache and resumes after
   const cache = new DataStore(a.root); await cache.initialize(); assert.equal(cache.engine.state.tasks.length, 1);
   await mkdir(missing); await a.folder.refresh();
   assert.equal(a.folder.status.error, null);
-  assert.equal(parseWorkspace(JSON.parse(await readFile(a.folder.ownFile, 'utf8'))).tasks[0].values.title, '断开路径时记录');
+  assert.equal((await readFolderSnapshot(a.folder.ownFile)).tasks[0].values.title, '断开路径时记录');
 });
 test('a partial incoming file is never overwritten and cannot discard a local edit', async t => {
   const a = await device(t); const incoming = path.join(a.folder.directory, 'device-other.json');
@@ -118,13 +118,13 @@ test('a partial incoming file is never overwritten and cannot discard a local ed
   assert.equal(a.local.engine.state.tasks.length, 1);
   await writeFile(incoming, JSON.stringify(new WorkspaceEngine('peer').state));
   await a.folder.refresh(); assert.equal(a.folder.status.error, null);
-  assert.equal(parseWorkspace(JSON.parse(await readFile(a.folder.ownFile, 'utf8'))).tasks.length, 1);
+  assert.equal((await readFolderSnapshot(a.folder.ownFile)).tasks.length, 1);
 });
 test('rejecting an invalid destination leaves the original path and files unchanged', async t => {
   const a = await device(t); const destination = await temporaryDirectory(t);
   await writeFile(path.join(destination, 'device-bad.json'), '{"schemaVersion":99}');
   const originalPath = a.folder.directory; const original = await readFile(a.folder.ownFile, 'utf8');
-  await assert.rejects(a.folder.changeDirectory(destination), /格式损坏/);
+  await assert.rejects(a.folder.changeDirectory(destination), /较新版本/);
   assert.equal(a.folder.directory, originalPath); assert.equal(await readFile(a.folder.ownFile, 'utf8'), original);
   assert.deepEqual(await readdir(destination), ['device-bad.json']);
 });
@@ -142,7 +142,7 @@ test('path changes and task writes are serialized without losing either task', a
     a.folder.update(engine => engine.apply({ type: 'task.add', title: '切换后', listId: 'inbox' })),
   ]);
   assert.equal(a.folder.directory, destination);
-  assert.equal(parseWorkspace(JSON.parse(await readFile(a.folder.ownFile, 'utf8'))).tasks.length, 2);
+  assert.equal((await readFolderSnapshot(a.folder.ownFile)).tasks.length, 2);
 });
 test('client conflict-copy files are merged while temp files are ignored', async t => {
   const a = await device(t); const peer = new WorkspaceEngine('peer');

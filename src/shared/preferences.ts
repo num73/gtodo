@@ -18,6 +18,9 @@ export const userPreferencesSchema = z.object({
   taskNotifications: z.boolean().default(true),
   pomodoroNotifications: z.boolean().default(true),
   showCompleted: z.boolean().default(true),
+  sidebarVisible: z.boolean().default(true),
+  inboxVisible: z.boolean().default(true),
+  inboxPurged: z.boolean().default(false),
   noteColor: z.enum(noteColors).default('yellow'),
   boardTextBackground: color.default(defaultCardStyle.color),
   boardTextColor: color.default(defaultCardStyle.textColor),
@@ -32,12 +35,21 @@ export const userPreferencesPatchSchema = z.object({
   restoreNotes: userPreferencesSchema.shape.restoreNotes.unwrap(), restorePomodoro: userPreferencesSchema.shape.restorePomodoro.unwrap(),
   taskNotifications: userPreferencesSchema.shape.taskNotifications.unwrap(), pomodoroNotifications: userPreferencesSchema.shape.pomodoroNotifications.unwrap(),
   showCompleted: userPreferencesSchema.shape.showCompleted.unwrap(), noteColor: userPreferencesSchema.shape.noteColor.unwrap(),
+  sidebarVisible: userPreferencesSchema.shape.sidebarVisible.unwrap(),
+  inboxVisible: userPreferencesSchema.shape.inboxVisible.unwrap(),
+  inboxPurged: userPreferencesSchema.shape.inboxPurged.unwrap(),
   boardTextBackground: userPreferencesSchema.shape.boardTextBackground.unwrap(), boardTextColor: userPreferencesSchema.shape.boardTextColor.unwrap(),
   boardTextFontSize: userPreferencesSchema.shape.boardTextFontSize.unwrap(),
 }).partial().strict();
 export function patchUserPreferences(current: UserPreferences, patch: unknown): UserPreferences {
   const values = Object.fromEntries(Object.entries(userPreferencesPatchSchema.parse(patch)).filter(([, value]) => value !== undefined));
-  return userPreferencesSchema.parse({ ...current, ...values });
+  if (current.inboxPurged && (values.inboxVisible === true || values.inboxPurged === false)) throw new Error('“任务”清单已永久删除，无法还原。');
+  const next = userPreferencesSchema.parse({ ...current, ...values });
+  if (next.inboxPurged) next.inboxVisible = false;
+  return { ...next, startupView: resolveStartupView(next) };
+}
+export function resolveStartupView(preferences: Pick<UserPreferences, 'startupView' | 'inboxVisible'>): UserPreferences['startupView'] {
+  return preferences.startupView === 'inbox' && !preferences.inboxVisible ? 'all' : preferences.startupView;
 }
 export function creationDefaults(command: Command, preferences: UserPreferences): Command {
   if (command.type === 'note.add') return { ...command, color: command.color ?? preferences.noteColor };

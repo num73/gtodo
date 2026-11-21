@@ -2,6 +2,8 @@ import { emptyWorkspace, localDate, nextDate, type Clock, type Command, type Rec
 import { compareClock, linkedNoteForTask, linkedTaskForNote, synchronizeLinkedNotes } from './note-links';
 import { BOARD_ID, boardSize, clampBoardLayout, defaultBoard, defaultCardStyle, type Board } from './board';
 import { normalizeNoteViews } from './notebook';
+import { captureDocumentHistory, documentBodies, documentHistory, mergeRevisions, revisionId } from './document-history';
+import type { DocumentTarget } from './documents';
 
 export { compareClock } from './note-links';
 function mergePurged(a: PurgedRecord[], b: PurgedRecord[]) {
@@ -20,6 +22,7 @@ function removePurged(workspace: Workspace) {
   workspace.boardCards = (workspace.boardCards ?? []).filter(item => !ids.has(`boardCard:${item.id}`));
   workspace.lists = workspace.lists.filter(item => !ids.has(`list:${item.id}`));
   workspace.steps = workspace.steps.filter(item => !ids.has(`step:${item.id}`) && !ids.has(`task:${item.values.taskId}`));
+  workspace.documentRevisions = (workspace.documentRevisions ?? []).filter(item => !ids.has(`${item.kind}:${item.targetId}`));
   for (const task of workspace.tasks) {
     if (ids.has(`list:${task.values.listId}`)) task.values.listId = 'inbox';
     if (task.values.noteLink && ids.has(`note:${task.values.noteLink.noteId}`)) task.values.noteLink = null;
@@ -41,14 +44,16 @@ function mergeRecords<T extends object>(a: RecordItem<T>[], b: RecordItem<T>[]):
   return [...result.values()].sort((x, y) => x.id.localeCompare(y.id, 'en'));
 }
 export function mergeWorkspaces(a: Workspace, b: Workspace): Workspace {
-  return synchronizeLinkedNotes(normalizeNoteViews(removePurged({ schemaVersion: 1, lists: mergeRecords(a.lists, b.lists), tasks: mergeRecords(a.tasks, b.tasks), steps: mergeRecords(a.steps, b.steps), notes: mergeRecords(a.notes, b.notes), noteFolders: mergeRecords(a.noteFolders ?? [], b.noteFolders ?? []), boards: mergeRecords(a.boards ?? [], b.boards ?? []), boardCards: mergeRecords(a.boardCards ?? [], b.boardCards ?? []), purged: mergePurged(a.purged ?? [], b.purged ?? []) })));
+  const left = captureDocumentHistory({ ...a }), right = captureDocumentHistory({ ...b });
+  return captureDocumentHistory(synchronizeLinkedNotes(normalizeNoteViews(removePurged({ schemaVersion: 2, lists: mergeRecords(a.lists, b.lists), tasks: mergeRecords(a.tasks, b.tasks), steps: mergeRecords(a.steps, b.steps), notes: mergeRecords(a.notes, b.notes), noteFolders: mergeRecords(a.noteFolders ?? [], b.noteFolders ?? []), boards: mergeRecords(a.boards ?? [], b.boards ?? []), boardCards: mergeRecords(a.boardCards ?? [], b.boardCards ?? []), purged: mergePurged(a.purged ?? [], b.purged ?? []), documentRevisions: mergeRevisions(left.documentRevisions, right.documentRevisions) }))), documentBodies(a), [documentBodies(b)]);
 }
 export class WorkspaceEngine {
   state: Workspace;
   private tick = 0;
-  constructor(readonly deviceId: string, state = emptyWorkspace()) { this.state = synchronizeLinkedNotes(normalizeNoteViews(removePurged({ ...emptyWorkspace(), ...structuredClone(state), purged: mergePurged(state.purged ?? [], []) }))); this.observe(); }
+  constructor(readonly deviceId: string, state = emptyWorkspace()) { this.state = captureDocumentHistory(synchronizeLinkedNotes(normalizeNoteViews(removePurged({ ...emptyWorkspace(), ...structuredClone(state), schemaVersion: 2, purged: mergePurged(state.purged ?? [], []) })))); this.observe(); }
   private observe() {
     for (const marker of this.state.purged) this.tick = Math.max(this.tick, marker.clock.tick);
+    for (const revision of this.state.documentRevisions) this.tick = Math.max(this.tick, revision.clock.tick);
     for (const collection of [this.state.lists, this.state.tasks, this.state.steps, this.state.notes, this.state.noteFolders, this.state.boards, this.state.boardCards]) {
       for (const item of collection) for (const clock of Object.values(item.clocks) as Clock[]) this.tick = Math.max(this.tick, clock.tick);
     }
@@ -66,6 +71,24 @@ export class WorkspaceEngine {
     }
   }
   merge(remote: Workspace) { this.state = mergeWorkspaces(this.state, remote); this.observe(); }
+  restoreDocumentVersion(target: DocumentTarget, versionId: string) {
+    const history = documentHistory(this.state, target), revision = history.versions.find(item => item.id === versionId);
+    if (!revision) throw new Error('历史版本已变化，请重新打开历史记录。');
+    const before = documentBodies(this.state), clock = this.clock();
+    if (target.kind === 'task') {
+      const item = this.state.tasks.find(item => item.id === target.id && !item.values.deleted);
+      if (!item) throw new Error('任务已删除。');
+      item.values.notes = revision.content; item.values.notesAssets = { ...revision.assets }; item.clocks.notes = clock; item.clocks.notesAssets = clock;
+    } else {
+      const item = this.state.notes.find(item => item.id === target.id && !item.values.deleted);
+      if (!item) throw new Error('笔记已删除。');
+      item.values.content = revision.content; item.values.assets = { ...revision.assets }; item.clocks.content = clock; item.clocks.assets = clock;
+    }
+    synchronizeLinkedNotes(this.state); captureDocumentHistory(this.state, before);
+    const body = documentBodies(this.state).get(`${target.kind}:${target.id}`)!;
+    const restored = this.state.documentRevisions.find(item => item.id === revisionId(body));
+    if (restored) restored.parents = history.heads.sort();
+  }
   private deletedRecord(target: PurgedRecord) {
     const collection = target.kind === 'task' ? this.state.tasks : target.kind === 'note' ? this.state.notes : target.kind === 'list' ? this.state.lists : target.kind === 'noteFolder' ? this.state.noteFolders : target.kind === 'boardCard' ? this.state.boardCards : this.state.steps;
     const item = collection.find(item => item.id === target.id);
@@ -96,6 +119,11 @@ export class WorkspaceEngine {
     removePurged(this.state);
   }
   apply(command: Command) {
+    const before = documentBodies(this.state);
+    this.execute(command);
+    captureDocumentHistory(this.state, before);
+  }
+  private execute(command: Command) {
     const now = new Date().toISOString();
     switch (command.type) {
       case 'board.update': {

@@ -8,7 +8,7 @@ import Modal from './Modal';
 import { isComposing } from './keyboard';
 import TaskStep from './TaskStep';
 
-export default function TaskDetails({ task, lists, steps, dispatch, close, remove, overlay = false, createLinkedNote, linkedNoteId, focusTask, toast }: { task: Task; lists: TaskList[]; steps: Step[]; dispatch: (command: Command) => Promise<boolean>; close: () => void; remove: (task: Task) => void; overlay?: boolean; createLinkedNote?: (taskId: string) => Promise<void>; linkedNoteId?: string; focusTask?: (task: Task) => void; toast: (text: string, undo?: () => void) => void }) {
+export default function TaskDetails({ task, lists, inboxLabel = '任务', steps, dispatch, close, remove, overlay = false, createLinkedNote, linkedNoteId, focusTask, toast }: { task: Task; lists: TaskList[]; inboxLabel?: string; steps: Step[]; dispatch: (command: Command) => Promise<boolean>; close: () => void; remove: (task: Task) => void; overlay?: boolean; createLinkedNote?: (taskId: string) => Promise<void>; linkedNoteId?: string; focusTask?: (task: Task) => void; toast: (text: string, undo?: () => void) => void }) {
   const v = task.values;
   const [noteDraft] = useState(() => new FieldDraft<{ title: string; content: string; format: DocumentFormat }>({ title: v.title, content: v.notes, format: v.notesFormat }, async patch => {
     const taskPatch: Partial<TaskValues> = {};
@@ -83,7 +83,7 @@ export default function TaskDetails({ task, lists, steps, dispatch, close, remov
         <label><span><CalendarDays size={18} />截止日期</span><input aria-label="截止日期" type="date" value={v.dueDate ?? ''} onChange={event => void update({ dueDate: event.target.value || null })} /></label>
         <label><span><Bell size={18} />提醒我</span><input aria-label="提醒时间" type="datetime-local" value={reminderLocal} onChange={event => { const date = event.target.value ? new Date(event.target.value) : null; if (!date || !isNaN(date.valueOf())) void update({ reminder: date?.toISOString() ?? null }); }} /></label>
         <label><span><Repeat2 size={18} />重复</span><select aria-label="重复频率" value={v.repeat} onChange={event => void update({ repeat: event.target.value as TaskValues['repeat'] })}><option value="none">不重复</option><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>
-        <label><span><List size={18} />所在清单</span><select aria-label="所在清单" value={lists.some(list => list.id === v.listId) ? v.listId : 'inbox'} onChange={event => void update({ listId: event.target.value })}><option value="inbox">任务</option>{lists.map(list => <option key={list.id} value={list.id}>{list.values.name}</option>)}</select></label>
+        <label><span><List size={18} />所在清单</span><select aria-label="所在清单" value={lists.some(list => list.id === v.listId) ? v.listId : 'inbox'} onChange={event => void update({ listId: event.target.value })}><option value="inbox">{inboxLabel}</option>{lists.map(list => <option key={list.id} value={list.id}>{list.values.name}</option>)}</select></label>
       </div>
       {v.repeat !== 'none' && <p className="detail-hint">完成后创建下一次任务。</p>}
       {v.reminder && <p className="detail-hint">提醒需保持应用运行。</p>}

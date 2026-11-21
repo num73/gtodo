@@ -123,7 +123,7 @@ test('clearing an unrelated note keeps images needed by another trash record', a
   const relative = await f.folder.addImage({ kind: 'task', id }, await png());
   await f.folder.update(engine => { engine.apply({ type: 'task.update', id, patch: { deleted: true } }); engine.apply({ type: 'note.update', id: engine.state.notes[0].id, patch: { deleted: true } }); });
   await f.folder.purgeTrash((await f.folder.getTrash()).items.filter(item => item.kind === 'note'));
-  assert.ok((await readdir(path.join(f.root, 'media'))).includes(relative.slice(7)));
+  assert.ok((await readdir(path.join(f.root, 'media'))).includes(path.basename(relative)));
   await f.folder.restoreTrash((await f.folder.getTrash()).items[0]); assert.equal(f.store.engine.state.tasks[0].values.deleted, false);
   assert.deepEqual((await f.documents.readImage(f.folder.directory, f.store.engine.state, { kind: 'task', id }, relative)).bytes, await png());
 });
@@ -147,7 +147,7 @@ test('unused image cleanup preserves attachments referenced only by the automati
   const relative = await f.folder.addImage({ kind: 'task', id }, await png());
   await f.folder.update(engine => engine.apply({ type: 'task.update', id, patch: { notesAssets: {} } }));
   await f.folder.purgeTrash([]);
-  assert.ok((await readdir(path.join(f.root, 'media'))).includes(relative.slice(7)));
+  assert.ok((await readdir(path.join(f.root, 'media'))).includes(path.basename(relative)));
 });
 
 test('unavailable folder prevents permanent deletion and cleanup resumes after a partial file failure', async t => {

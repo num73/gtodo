@@ -1,6 +1,6 @@
 /* CSS-pixel breakpoints apply to both window size and interface zoom. */
 /* Navigation uses the same measured fit decision as focus and drawer behavior. */
-.app-shell[data-navigation="drawer"] .mobile-nav-toggle { display: inline-flex; }
+.app-shell[data-navigation="hidden"] .sidebar { display: none; }
 .app-shell[data-navigation="drawer"] .sidebar { position: absolute; left: 0; top: 0; bottom: 0; width: min(250px, calc(100vw - 24px)); flex: none; z-index: 30; transform: translateX(-100%); visibility: hidden; }
 .app-shell[data-navigation="drawer"] .sidebar.sidebar-open { transform: translateX(0); visibility: visible; }
 @media (min-width: 1500px) {

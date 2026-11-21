@@ -9,9 +9,9 @@ export const paneLayoutSchema = z.object({
 export type PaneLayout = z.infer<typeof paneLayoutSchema>;
 export const dividerWidth = 6;
 export const minimumTaskWidth = 300;
-export function fitPaneLayout(preferred: PaneLayout, width: number, detailsVisible: boolean): PaneLayout {
-  const available = Math.max(0, width - minimumTaskWidth - dividerWidth * (detailsVisible ? 2 : 1));
-  const sidebar = Math.min(preferred.sidebar, Math.max(paneLimits.sidebar.min, available - (detailsVisible ? paneLimits.details.min : 0)));
-  const details = detailsVisible ? Math.min(preferred.details, Math.max(paneLimits.details.min, available - sidebar)) : preferred.details;
+export function fitPaneLayout(preferred: PaneLayout, width: number, detailsVisible: boolean, sidebarVisible = true): PaneLayout {
+  const available = Math.max(0, width - minimumTaskWidth - dividerWidth * (Number(detailsVisible) + Number(sidebarVisible)));
+  const sidebar = sidebarVisible ? Math.min(preferred.sidebar, Math.max(paneLimits.sidebar.min, available - (detailsVisible ? paneLimits.details.min : 0))) : preferred.sidebar;
+  const details = detailsVisible ? Math.min(preferred.details, Math.max(paneLimits.details.min, available - (sidebarVisible ? sidebar : 0))) : preferred.details;
   return { sidebar, details };
 }

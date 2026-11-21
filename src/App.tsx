@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
-import { Sun, Star, CalendarDays, Layers, CheckCheck, List, Plus, Search, Settings as SettingsIcon, Menu, ChevronDown, ChevronRight, Check, X, Minus, Square, Copy, Minimize2, Lightbulb, SlidersHorizontal, Trash2, ArrowDownWideNarrow, Bell, Repeat2, ListChecks, StickyNote, AlertCircle, Timer, LayoutDashboard } from 'lucide-react';
+import { Sun, Star, CalendarDays, Layers, CheckCheck, List, Plus, Search, Settings as SettingsIcon, PanelLeftClose, PanelLeftOpen, ChevronDown, ChevronRight, Check, X, Minus, Square, Copy, Minimize2, Lightbulb, SlidersHorizontal, MoreHorizontal, Trash2, ArrowDownWideNarrow, Bell, Repeat2, ListChecks, StickyNote, AlertCircle, Timer, LayoutDashboard } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { colors, localDate, zoomSteps, type AppState, type Command, type Task, type TaskList, type ZoomAction } from './shared/model';
 import Settings from './components/Settings';
@@ -21,6 +21,7 @@ import { PomodoroLauncher } from './pomodoro/Pomodoro';
 import { usePomodoro } from './pomodoro/usePomodoro';
 import PaneDivider from './components/PaneDivider';
 import { defaultPaneLayout, dividerWidth, fitPaneLayout, minimumTaskWidth, paneLimits, type PaneLayout } from './shared/layout';
+import { resolveStartupView } from './shared/preferences';
 
 type View = 'day' | 'important' | 'planned' | 'all' | 'completed' | 'inbox' | string;
 const smartViews: { id: string; title: string; icon: LucideIcon; color: string }[] = [
@@ -61,7 +62,14 @@ export default function App() {
   const [bodyWidth, setBodyWidth] = useState(window.innerWidth);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [navigationSaving, setNavigationSaving] = useState(false);
   const compactNavigation = bodyWidth < paneLimits.sidebar.min + dividerWidth + minimumTaskWidth;
+  const sidebarVisible = state?.preferences.sidebarVisible ?? true;
+  const inboxVisible = state?.preferences.inboxVisible ?? true;
+  const inboxLabel = inboxVisible ? '任务' : '未分类';
+  const defaultTaskView = inboxVisible ? 'inbox' : 'all';
+  const inlineNavigation = !compactNavigation && sidebarVisible;
+  const navigationVisible = compactNavigation ? sidebarOpen : sidebarVisible;
   const overlayDetails = useMediaQuery('(max-width: 1120px)');
   const [suggestions, setSuggestions] = useState(false);
   const [showCompleted, setShowCompleted] = useState(true);
@@ -74,9 +82,13 @@ export default function App() {
   const [listColor, setListColor] = useState<typeof colors[number]>('purple');
   const [listBusy, setListBusy] = useState(false);
   const [confirmListDelete, setConfirmListDelete] = useState(false);
+  const [inboxDeleteOpen, setInboxDeleteOpen] = useState(false);
+  const [inboxDeleteBusy, setInboxDeleteBusy] = useState(false);
+  const [inboxDeleteError, setInboxDeleteError] = useState('');
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [today, setToday] = useState(localDate());
   const searchRef = useRef<HTMLInputElement>(null);
+  const [searchRequested, setSearchRequested] = useState(false);
   const composerRef = useRef<HTMLInputElement>(null);
   const mainHeading = useRef<HTMLHeadingElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -103,12 +115,25 @@ export default function App() {
     setSidebarOpen(false);
     window.requestAnimationFrame(() => navigationToggle.current?.focus());
   }
+  async function saveSidebarVisibility(visible: boolean) {
+    setNavigationSaving(true);
+    try { setState(await api!.setPreferences({ sidebarVisible: visible })); return true; }
+    catch { notify('导航显示设置未能保存，请重试。'); return false; }
+    finally { setNavigationSaving(false); }
+  }
+  function toggleNavigation() {
+    if (navigationSaving) return;
+    if (compactNavigation) {
+      if (sidebarOpen) closeNavigation();
+      else void withSavedDetails(() => { setSidebarOpen(true); setSelectedId(null); });
+    } else void saveSidebarVisibility(!sidebarVisible);
+  }
   useEffect(() => {
     if (!api) { setLoadError('请打开 GTodo 桌面应用。浏览器预览无法访问本地数据文件夹。'); return; }
     let alive = true;
     const receive = (value: AppState) => {
       if (!alive) return;
-      if (!initialViewLoaded.current) { initialViewLoaded.current = true; setView(value.preferences.startupView); }
+      if (!initialViewLoaded.current) { initialViewLoaded.current = true; setView(resolveStartupView(value.preferences)); }
       setState(value);
     };
     const removeListener = api.onState(receive);
@@ -116,6 +141,7 @@ export default function App() {
     return () => { alive = false; removeListener(); };
   }, [api]);
   useEffect(() => setSidebarOpen(false), [compactNavigation]);
+  useEffect(() => { if (!inboxVisible && view === 'inbox') setView('all'); }, [inboxVisible, view]);
   useEffect(() => {
     const request = state?.notebookRequest;
     if (!request || request.nonce === notebookRequest.current) return;
@@ -137,13 +163,17 @@ export default function App() {
   useEffect(() => {
     if (compactNavigation && sidebarOpen) searchRef.current?.focus();
   }, [compactNavigation, sidebarOpen]);
-  useEffect(() => setTaskMenu(null), [view, query, settings, notesOpen, listDialog, compactNavigation, overlayDetails, showCompleted]);
+  useEffect(() => {
+    if (!searchRequested || !navigationVisible) return;
+    searchRef.current?.focus(); searchRef.current?.select(); setSearchRequested(false);
+  }, [searchRequested, navigationVisible, selectedId]);
+  useEffect(() => setTaskMenu(null), [view, query, settings, notesOpen, listDialog, inboxDeleteOpen, compactNavigation, navigationVisible, overlayDetails, showCompleted]);
   useEffect(() => {
     if (taskMenu && !state?.workspace.tasks.some(task => task.id === taskMenu.id && !task.values.deleted)) setTaskMenu(null);
   }, [state?.workspace.tasks, taskMenu?.id]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || isComposing(event) || document.querySelector('dialog[open]') || settings || listDialog || notesOpen) return;
+      if (event.defaultPrevented || isComposing(event) || document.querySelector('dialog[open]') || settings || listDialog || inboxDeleteOpen || notesOpen) return;
       if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'n') {
         event.preventDefault(); void createDesktopNote(); return;
       }
@@ -152,7 +182,9 @@ export default function App() {
         void withSavedDetails(() => {
           setSelectedId(null);
           if (compactNavigation) setSidebarOpen(true);
-          window.requestAnimationFrame(() => { searchRef.current?.focus(); searchRef.current?.select(); });
+          const focusSearch = () => setSearchRequested(true);
+          if (!compactNavigation && !sidebarVisible) void saveSidebarVisibility(true).then(saved => { if (saved) focusSearch(); });
+          else focusSearch();
         });
         return;
       }
@@ -160,7 +192,7 @@ export default function App() {
         event.preventDefault();
         void withSavedDetails(() => {
           setSidebarOpen(false); setSelectedId(null);
-          if ((view === 'board' || view === 'notebook') && !query.trim()) setView('inbox');
+          if ((view === 'board' || view === 'notebook') && !query.trim()) setView(defaultTaskView);
           window.requestAnimationFrame(() => composerRef.current?.focus());
         });
         return;
@@ -169,11 +201,11 @@ export default function App() {
         if (selectedId) selectTask(null);
         else if (sidebarOpen) closeNavigation();
         else if (suggestions) setSuggestions(false);
-        else if (query) { setQuery(''); searchRef.current?.focus(); }
+        else if (query) { setQuery(''); (navigationVisible ? searchRef.current : navigationToggle.current)?.focus(); }
       }
     };
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler);
-  }, [settings, listDialog, notesOpen, compactNavigation, selectedId, sidebarOpen, suggestions, query, view]);
+  }, [settings, listDialog, inboxDeleteOpen, notesOpen, compactNavigation, sidebarVisible, navigationVisible, defaultTaskView, selectedId, sidebarOpen, suggestions, query, view]);
   function openPomodoro(task?: Task) {
     setSidebarOpen(false);
     void api!.openPomodoro(task?.id).catch(error => notify((error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')));
@@ -227,16 +259,16 @@ export default function App() {
   const selected = tasks.find(task => task.id === selectedId);
   const menuTask = tasks.find(task => task.id === taskMenu?.id);
   const inlineDetails = !!selected && !overlayDetails;
-  const fittedPanes = fitPaneLayout(paneLayout, bodyWidth, inlineDetails);
+  const fittedPanes = fitPaneLayout(paneLayout, bodyWidth, inlineDetails, inlineNavigation);
   const sidebarMax = Math.max(paneLimits.sidebar.min, Math.min(paneLimits.sidebar.max, bodyWidth - minimumTaskWidth - dividerWidth * (inlineDetails ? 2 : 1) - (inlineDetails ? fittedPanes.details : 0)));
-  const detailsMax = Math.max(paneLimits.details.min, Math.min(paneLimits.details.max, bodyWidth - minimumTaskWidth - dividerWidth * 2 - fittedPanes.sidebar));
+  const detailsMax = Math.max(paneLimits.details.min, Math.min(paneLimits.details.max, bodyWidth - minimumTaskWidth - dividerWidth - (inlineNavigation ? dividerWidth + fittedPanes.sidebar : 0)));
   const customList = lists.find(list => list.id === view);
   const meta = smartViews.find(item => item.id === view) ?? { title: customList?.values.name ?? '任务', icon: List, color: customList?.values.color ?? 'blue' };
   const HeadingIcon = search ? Search : meta.icon;
   const available = tasks.filter(task => !task.values.completed && task.values.myDay !== today).sort((a, b) => Number(b.values.important) - Number(a.values.important) || (a.values.dueDate ?? '9999').localeCompare(b.values.dueDate ?? '9999')).slice(0, 6);
   function navigate(target: string) {
     void withSavedDetails(() => {
-      setView(target); setQuery(''); setSelectedId(null); setSuggestions(false); setSidebarOpen(false);
+      setView(target === 'inbox' ? defaultTaskView : target); setQuery(''); setSelectedId(null); setSuggestions(false); setSidebarOpen(false);
       if (compactNavigation || target === 'board') window.requestAnimationFrame(() => mainHeading.current?.focus());
     });
   }
@@ -244,6 +276,26 @@ export default function App() {
     void withSavedDetails(() => {
       setListDialog(list); setConfirmListDelete(false); setListName(list === 'new' ? '' : list.values.name); setListColor(list === 'new' ? 'purple' : list.values.color);
     });
+  }
+  function openInboxDelete() {
+    void withSavedDetails(() => { setInboxDeleteError(''); setInboxDeleteOpen(true); });
+  }
+  async function restoreInbox() {
+    try { setState(await api!.setPreferences({ inboxVisible: true })); }
+    catch { notify('“任务”清单未能恢复，请重试。'); }
+  }
+  async function removeInbox() {
+    if (inboxDeleteBusy) return;
+    setInboxDeleteBusy(true); setInboxDeleteError('');
+    try {
+      await flushMainDrafts();
+      setState(await api!.setPreferences({ inboxVisible: false }));
+      setInboxDeleteOpen(false); setSidebarOpen(false);
+      if (view === 'inbox') { setView('all'); setSelectedId(null); }
+      window.requestAnimationFrame(() => (mainHeading.current ?? navigationToggle.current)?.focus({ preventScroll: true }));
+      notify('“任务”清单已删除，内容可在“全部任务”中查看', () => void restoreInbox());
+    } catch (error) { setInboxDeleteError((error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+    finally { setInboxDeleteBusy(false); }
   }
   async function saveList(event: FormEvent) {
     event.preventDefault(); if (!listName.trim() || !listDialog || listBusy || confirmListDelete) return;
@@ -302,20 +354,20 @@ export default function App() {
         setTaskMenu({ id: task.id, x: bounds.left + 16, y: bounds.bottom, trigger: event.currentTarget.querySelector<HTMLElement>('.task-body') });
       }}>
       <button className={`task-check ${v.completed ? 'checked' : ''}`} aria-label={`${v.completed ? '取消完成' : '完成'} ${v.title}`} onClick={() => void dispatch({ type: 'task.update', id: task.id, patch: { completed: !v.completed } })}>{v.completed && <Check size={15} />}</button>
-      <button className="task-body" ref={button => { if (button) taskButtons.current.set(task.id, button); else taskButtons.current.delete(task.id); }} onClick={() => selectTask(task.id)}><span className="task-title">{v.title}</span><span className="task-meta"><span>{list?.values.name ?? '任务'}</span>{v.myDay === today && view !== 'day' && <span><Sun size={12} />我的一天</span>}{v.dueDate && <span className={!v.completed && v.dueDate < today ? 'overdue' : ''}><CalendarDays size={12} />{prettyDate(v.dueDate)}{!v.completed && v.dueDate < today ? ' · 已逾期' : ''}</span>}{steps.length > 0 && <span><ListChecks size={13} />{steps.filter(step => step.values.completed).length}/{steps.length}</span>}{v.notes && <StickyNote size={12} />}{v.reminder && <Bell size={12} />}{v.repeat !== 'none' && <Repeat2 size={12} />}</span></button>
+      <button className="task-body" ref={button => { if (button) taskButtons.current.set(task.id, button); else taskButtons.current.delete(task.id); }} onClick={() => selectTask(task.id)}><span className="task-title">{v.title}</span><span className="task-meta"><span>{list?.values.name ?? inboxLabel}</span>{v.myDay === today && view !== 'day' && <span><Sun size={12} />我的一天</span>}{v.dueDate && <span className={!v.completed && v.dueDate < today ? 'overdue' : ''}><CalendarDays size={12} />{prettyDate(v.dueDate)}{!v.completed && v.dueDate < today ? ' · 已逾期' : ''}</span>}{steps.length > 0 && <span><ListChecks size={13} />{steps.filter(step => step.values.completed).length}/{steps.length}</span>}{v.notes && <StickyNote size={12} />}{v.reminder && <Bell size={12} />}{v.repeat !== 'none' && <Repeat2 size={12} />}</span></button>
       <button className={`icon-button star-button ${v.important ? 'starred' : ''}`} aria-label={`${v.important ? '取消重要' : '标为重要'} ${v.title}`} onClick={() => void dispatch({ type: 'task.update', id: task.id, patch: { important: !v.important } })}><Star size={20} fill={v.important ? 'currentColor' : 'none'} /></button>
     </div>;
   }
   if (!state) return <div className="loading-app"><h1>GTodo</h1><p>{loadError || '加载中…'}</p>{api && loadError && <button className="button secondary" onClick={() => window.location.reload()}>重试</button>}</div>;
-  return <div className="app-shell" data-navigation={compactNavigation ? 'drawer' : 'sidebar'} data-details-layout={overlayDetails ? 'drawer' : 'columns'}>
+  return <div className="app-shell" data-navigation={compactNavigation ? 'drawer' : inlineNavigation ? 'sidebar' : 'hidden'} data-details-layout={overlayDetails ? 'drawer' : 'columns'}>
     <header className="titlebar">
-      <div className="titlebar-left"><button ref={navigationToggle} className="mobile-nav-toggle icon-button" aria-label={sidebarOpen ? '收起清单导航' : '展开清单导航'} aria-expanded={sidebarOpen} aria-controls="list-navigation" onClick={() => void withSavedDetails(() => { setSidebarOpen(!sidebarOpen); setSelectedId(null); })}><Menu size={18} /></button><span className="mini-mark"><Check size={13} strokeWidth={3} /></span><span className="titlebar-brand-text">GTodo</span></div>
+      <div className="titlebar-left"><button ref={navigationToggle} className="navigation-toggle icon-button" aria-label={navigationVisible ? '收起清单导航' : '展开清单导航'} title={navigationVisible ? '隐藏左侧导航' : '显示左侧导航'} aria-expanded={navigationVisible} aria-controls="list-navigation" aria-disabled={navigationSaving} onClick={toggleNavigation}>{navigationVisible ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button><span className="mini-mark"><Check size={13} strokeWidth={3} /></span><span className="titlebar-brand-text">GTodo</span></div>
       {state.gitEnabled && <GitMenu api={api!} />}
       <div className="titlebar-right"><div className="titlebar-zoom"><button aria-label="缩小显示" title="缩小 (Ctrl −)" disabled={state.zoom <= zoomSteps[0]} onClick={() => void changeZoom('out')}><Minus size={13} /></button><button className="zoom-percentage" aria-label={`当前缩放 ${state.zoom}%，点击恢复 100%`} title="恢复 100% (Ctrl 0)" onClick={() => void changeZoom('reset')}>{state.zoom}%</button><button aria-label="放大显示" title="放大 (Ctrl +)" disabled={state.zoom >= zoomSteps.at(-1)!} onClick={() => void changeZoom('in')}><Plus size={13} /></button></div><button className="titlebar-settings icon-button" aria-label="打开设置" title="设置" onClick={() => setSettings(true)}><SettingsIcon size={15} /></button><div className="window-buttons"><button aria-label="最小化" onClick={() => api!.windowControl('minimize')}><Minus size={15} /></button><button aria-label={state.mainWindow.fullScreen ? '退出全屏' : state.mainWindow.maximized ? '还原窗口' : '最大化'} title={state.mainWindow.fullScreen ? '退出全屏' : state.mainWindow.maximized ? '还原窗口' : '最大化'} onClick={() => api!.windowControl('maximize')}>{state.mainWindow.fullScreen ? <Minimize2 size={12} /> : state.mainWindow.maximized ? <Copy size={12} /> : <Square size={12} />}</button><button className="window-close" aria-label="关闭窗口" onClick={() => api!.windowControl('close')}><X size={17} /></button></div></div>
     </header>
     <div className="app-body" ref={bodyRef} style={{ '--sidebar-width': `${fittedPanes.sidebar}px`, '--details-width': `${fittedPanes.details}px` } as CSSProperties}>
       {compactNavigation && sidebarOpen && <button className="navigation-backdrop" aria-label="关闭清单导航遮罩" onClick={closeNavigation} />}
-      <aside id="list-navigation" ref={sidebarRef} className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`} inert={(compactNavigation && !sidebarOpen) || (overlayDetails && !!selected)} onKeyDown={event => {
+      <aside id="list-navigation" ref={sidebarRef} className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`} inert={!navigationVisible || (overlayDetails && !!selected)} onKeyDown={event => {
         if (!compactNavigation || !sidebarOpen || event.key !== 'Tab') return;
         const focusable = [...(sidebarRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input') ?? [])];
         if (event.shiftKey && document.activeElement === focusable[0]) { event.preventDefault(); focusable.at(-1)?.focus(); }
@@ -328,14 +380,30 @@ export default function App() {
         <nav className="smart-nav" aria-label="智能清单">{smartViews.map(item => <button key={item.id} className={`nav-item ${!search && view === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)}><item.icon size={20} className={`nav-icon color-${item.color}`} /><span>{item.title}</span><span className="nav-count">{tasks.filter(task => matches(task, item.id) && (item.id === 'completed' || !task.values.completed)).length || ''}</span></button>)}</nav>
         <button className={`nav-item board-nav ${!search && view === 'board' ? 'active' : ''}`} onClick={() => navigate('board')}><LayoutDashboard size={19} /><span>我的看板</span></button>
         <div className="list-heading"><span>清单</span><button className="icon-button" aria-label="新建清单" onClick={() => openListDialog('new')}><Plus size={17} /></button></div>
-        <nav className="custom-nav" aria-label="我的清单"><button className={`nav-item ${!search && view === 'inbox' ? 'active' : ''}`} onClick={() => navigate('inbox')}><List size={20} className="color-blue" /><span>任务</span><span className="nav-count">{tasks.filter(task => matches(task, 'inbox') && !task.values.completed).length || ''}</span></button>{lists.map(list => <button key={list.id} className={`nav-item ${!search && view === list.id ? 'active' : ''}`} onClick={() => navigate(list.id)}><List size={20} className={`color-${list.values.color}`} /><span>{list.values.name}</span><span className="nav-count">{tasks.filter(task => task.values.listId === list.id && !task.values.completed).length || ''}</span></button>)}<button className="new-list" onClick={() => openListDialog('new')}><Plus size={19} />新建清单</button></nav>
+        <nav className="custom-nav" aria-label="我的清单">
+          {inboxVisible && <div className={`custom-list-row ${!search && view === 'inbox' ? 'active' : ''}`}>
+            <button className={`nav-item ${!search && view === 'inbox' ? 'active' : ''}`} onClick={() => navigate('inbox')}><List size={20} className="color-blue" /><span>任务</span><span className="nav-count">{tasks.filter(task => matches(task, 'inbox') && !task.values.completed).length || ''}</span></button>
+            <button className="icon-button list-options" aria-label="管理清单 任务" title="管理清单" aria-haspopup="dialog" onClick={openInboxDelete}><MoreHorizontal size={17} /></button>
+          </div>}
+          {lists.map(list => <div className={`custom-list-row ${!search && view === list.id ? 'active' : ''}`} key={list.id}>
+          <button className={`nav-item ${!search && view === list.id ? 'active' : ''}`} onClick={() => navigate(list.id)} title={list.values.name}><List size={20} className={`color-${list.values.color}`} /><span>{list.values.name}</span><span className="nav-count">{tasks.filter(task => task.values.listId === list.id && !task.values.completed).length || ''}</span></button>
+          <button className="icon-button list-options" aria-label={`编辑或删除清单 ${list.values.name}`} title="编辑或删除清单" aria-haspopup="dialog" onClick={() => openListDialog(list)}><MoreHorizontal size={17} /></button>
+        </div>)}<button className="new-list" onClick={() => openListDialog('new')}><Plus size={19} />新建清单</button></nav>
         <div className="sidebar-bottom"><PomodoroLauncher state={pomodoro.snapshot} open={() => openPomodoro()} /><button className="desktop-notes-button" onClick={() => { setNotesOpen(true); setSidebarOpen(false); }} title="Ctrl Shift N 新建便签"><StickyNote size={18} /><span>桌面便签</span><small>{state.workspace.notes.filter(isDesktopNote).length || ''}</small></button><button className={`desktop-notes-button ${view === 'notebook' && !search ? 'active' : ''}`} onClick={() => navigate('notebook')}><BookOpen size={18} /><span>笔记</span><small>{state.workspace.notes.filter(isNotebookNote).length || ''}</small></button>{state.folder.error && <div className="folder-status error-text" title={state.folder.error}><AlertCircle size={17} /><span>数据文件夹异常</span></div>}</div>
       </aside>
-      {!compactNavigation && <PaneDivider label="调整清单栏宽度" controls="list-navigation" value={fittedPanes.sidebar} min={paneLimits.sidebar.min} max={sidebarMax} defaultValue={defaultPaneLayout.sidebar} onChange={value => changePane('sidebar', value)} onCommit={value => savePane('sidebar', value)} />}
+      {inlineNavigation && <PaneDivider label="调整清单栏宽度" controls="list-navigation" value={fittedPanes.sidebar} min={paneLimits.sidebar.min} max={sidebarMax} defaultValue={defaultPaneLayout.sidebar} onChange={value => changePane('sidebar', value)} onCommit={value => savePane('sidebar', value)} />}
       <main className={`main-panel theme-${meta.color} ${selected && !overlayDetails ? 'with-details' : ''} ${view === 'board' && !search ? 'main-board' : ''} ${view === 'notebook' && !search ? 'main-notebook' : ''}`} inert={(overlayDetails && !!selected) || (compactNavigation && sidebarOpen)}>
         {view === 'notebook' && !search ? <Notebook state={state} api={api!} update={setState} toast={notify} requestedId={notebookId} requestNonce={state.notebookRequest?.nonce} /> : view === 'board' && !search ? <Board state={state} api={api!} update={setState} toast={notify} openTask={selectTask} headingRef={mainHeading} /> : <>
         <div className="main-scroll">
-          <header className="page-header"><div className="hero-row"><div><div className="page-heading"><HeadingIcon size={24} strokeWidth={1.7} /><h1 ref={mainHeading} tabIndex={-1}>{search ? '搜索结果' : meta.title}</h1></div>{(search || view === 'day') && <p className="page-subtitle">{search ? `“${query.trim()}” · ${filtered.length} 个结果` : new Date(`${today}T12:00:00`).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</p>}</div><div className="header-actions">{search && <button className="soft-button" onClick={() => setQuery('')}><X size={16} /><span>退出搜索</span></button>}{view === 'day' && !search && <button className={`soft-button ${suggestions ? 'pressed' : ''}`} onClick={() => void withSavedDetails(() => { setSuggestions(!suggestions); setSelectedId(null); })}><Lightbulb size={17} /><span>建议</span></button>}{customList && !search && <button className="soft-button" onClick={() => openListDialog(customList)} aria-label="编辑清单"><SlidersHorizontal size={17} /></button>}</div></div>
+          <header className="page-header"><div className={`hero-row ${(customList || view === 'inbox') && !search ? 'list-heading-row' : ''}`}>
+            <div><div className="page-heading"><HeadingIcon size={24} strokeWidth={1.7} /><h1 ref={mainHeading} tabIndex={-1}>{search ? '搜索结果' : meta.title}</h1></div>{(search || view === 'day') && <p className="page-subtitle">{search ? `“${query.trim()}” · ${filtered.length} 个结果` : new Date(`${today}T12:00:00`).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</p>}</div>
+            <div className="header-actions">
+              {search && <button className="soft-button" onClick={() => setQuery('')}><X size={16} /><span>退出搜索</span></button>}
+              {view === 'day' && !search && <button className={`soft-button ${suggestions ? 'pressed' : ''}`} onClick={() => void withSavedDetails(() => { setSuggestions(!suggestions); setSelectedId(null); })}><Lightbulb size={17} /><span>建议</span></button>}
+              {customList && !search && <button className="soft-button" onClick={() => openListDialog(customList)} aria-label="编辑清单" title="修改名称、颜色或删除清单"><SlidersHorizontal size={17} /><span>编辑清单</span></button>}
+              {view === 'inbox' && !search && <button className="soft-button" onClick={openInboxDelete}><Trash2 size={17} /><span>删除清单</span></button>}
+            </div>
+          </div>
           {view === 'day' && !search && filtered.length > 0 && <p className="day-progress">已完成 {completed.length} / {filtered.length}</p>}
           </header>
           {state.notice && <div className="notice"><AlertCircle size={17} />{state.notice}</div>}
@@ -348,7 +416,7 @@ export default function App() {
           {completed.length > 0 && <section className="completed-section">{search || view === 'completed' ? <h2 className="completed-heading">已完成<span>{completed.length}</span></h2> : <button className="completed-heading" aria-expanded={showCompleted} onClick={() => setShowCompleted(!showCompleted)}>{showCompleted ? <ChevronDown size={15} /> : <ChevronRight size={15} />}已完成<span>{completed.length}</span></button>}{(showCompleted || search || view === 'completed') && <div className="task-list">{completed.map(taskRow)}</div>}</section>}
         </div>
         <div className="composer-wrap">
-          {(search || view === 'completed') && <p className="composer-hint">新任务将添加到“任务”</p>}
+          {(search || view === 'completed') && <p className="composer-hint">{inboxVisible ? '新任务将添加到“任务”' : '新任务可在“全部任务”中查看'}</p>}
           <form className="composer" onSubmit={addTask} onKeyDown={event => { if (event.key === 'Enter' && isComposing(event.nativeEvent)) event.preventDefault(); }}><Plus size={20} /><input ref={composerRef} aria-label="添加任务" placeholder="添加任务" title="Ctrl N 输入，Enter 添加" value={newTitle} maxLength={500} onChange={event => setNewTitle(event.target.value)} disabled={adding} /><label className={`quick-date ${composerDue ? 'has-date' : ''}`} title={composerDue ? `截止日期：${composerDue}` : '设置截止日期'}><CalendarDays size={18} /><input type="date" aria-label="新任务截止日期" value={composerDue} disabled={adding} onChange={event => setNewDue(event.target.value)} /></label><button type="submit" className="add-task-button" disabled={!newTitle.trim() || adding}>{adding ? '添加中' : '添加'}</button></form>
           {composerDue && <div className="composer-date" role="status"><CalendarDays size={13} /><span>截止日期：{prettyDate(composerDue)}</span><button className="icon-button" aria-label="清除新任务截止日期" disabled={adding} onClick={() => setNewDue('')}><X size={13} /></button></div>}
         </div>
@@ -356,13 +424,21 @@ export default function App() {
       </main>
       {selected && overlayDetails && <button className="details-backdrop" aria-label="关闭任务详情遮罩" onClick={() => selectTask(null)} />}
       {inlineDetails && <PaneDivider label="调整任务详情宽度" controls="task-details" value={fittedPanes.details} min={paneLimits.details.min} max={detailsMax} defaultValue={defaultPaneLayout.details} direction={-1} onChange={value => changePane('details', value)} onCommit={value => savePane('details', value)} />}
-      {selected && <TaskDetails key={selected.id} task={selected} lists={lists} steps={state.workspace.steps.filter(step => step.values.taskId === selected.id && !step.values.deleted)} dispatch={dispatch} close={() => selectTask(null)} remove={task => void removeTask(task)} overlay={overlayDetails} createLinkedNote={createLinkedDesktopNote} linkedNoteId={linkedNoteForTask(state.workspace, selected)?.id} focusTask={openPomodoro} toast={notify} />}
+      {selected && <TaskDetails key={selected.id} task={selected} lists={lists} inboxLabel={inboxLabel} steps={state.workspace.steps.filter(step => step.values.taskId === selected.id && !step.values.deleted)} dispatch={dispatch} close={() => selectTask(null)} remove={task => void removeTask(task)} overlay={overlayDetails} createLinkedNote={createLinkedDesktopNote} linkedNoteId={linkedNoteForTask(state.workspace, selected)?.id} focusTask={openPomodoro} toast={notify} />}
     </div>
     {settings && <Settings state={state} api={api!} pomodoro={pomodoro} close={() => setSettings(false)} update={setState} toast={notify} />}
     {notesOpen && <NotesGallery state={state} api={api!} close={() => setNotesOpen(false)} update={setState} toast={notify} />}
+    {inboxDeleteOpen && <Modal title="删除清单" close={() => setInboxDeleteOpen(false)} busy={inboxDeleteBusy}>
+      <div className="list-form">
+        <p className="setting-description">删除“任务”清单？其中的 {tasks.filter(task => matches(task, 'inbox')).length} 个任务及备注会保留，可在“全部任务”中继续查看和编辑。</p>
+        <p className="setting-description">此操作只影响本机。以后可在“设置 → 数据与同步”的回收站下方还原或永久删除此清单。</p>
+        {inboxDeleteError && <p className="error-text" role="alert">{inboxDeleteError}</p>}
+        <div className="form-footer"><button autoFocus className="button secondary" disabled={inboxDeleteBusy} onClick={() => setInboxDeleteOpen(false)}>取消</button><button className="button danger-button" disabled={inboxDeleteBusy} onClick={() => void removeInbox()}>{inboxDeleteBusy ? '正在删除…' : '确认删除清单'}</button></div>
+      </div>
+    </Modal>}
     {listDialog && <Modal title={confirmListDelete ? '删除清单' : listDialog === 'new' ? '新建清单' : '编辑清单'} close={() => confirmListDelete ? setConfirmListDelete(false) : setListDialog(null)} busy={listBusy}>
       {confirmListDelete && listDialog !== 'new' ? <div className="list-form">
-        <p className="setting-description">删除“{listDialog.values.name}”？其中的 {tasks.filter(task => task.values.listId === listDialog.id).length} 个任务会移入“任务”，内容保留。</p>
+        <p className="setting-description">删除“{listDialog.values.name}”？其中的 {tasks.filter(task => task.values.listId === listDialog.id).length} 个任务{inboxVisible ? '会移入“任务”，内容保留。' : '会保留，可在“全部任务”中查看。'}</p>
         <div className="form-footer"><button autoFocus className="button secondary" disabled={listBusy} onClick={() => setConfirmListDelete(false)}>取消</button><button className="button danger-button" disabled={listBusy} onClick={async () => {
           setListBusy(true);
           const ok = await dispatch({ type: 'list.update', id: listDialog.id, patch: { deleted: true } });
@@ -372,7 +448,7 @@ export default function App() {
       </div> : <form className="list-form" onSubmit={saveList}>
         <label>清单名称<input autoFocus required disabled={listBusy} maxLength={500} placeholder="例如：工作计划、生活小事" value={listName} onChange={event => setListName(event.target.value)} /></label>
         <label>清单颜色</label><div className="color-picker">{colors.map(color => <button key={color} type="button" disabled={listBusy} className={`color-swatch bg-${color} ${listColor === color ? 'chosen' : ''}`} aria-label={colorNames[color]} aria-pressed={listColor === color} onClick={() => setListColor(color)}>{listColor === color && <Check size={17} />}</button>)}</div>
-        {listDialog !== 'new' && <div className="delete-list-note"><p>删除清单后，其中的任务会移入“任务”。</p><button type="button" className="text-button danger-text" disabled={listBusy} onClick={() => setConfirmListDelete(true)}><Trash2 size={15} />删除清单</button></div>}
+        {listDialog !== 'new' && <div className="delete-list-note"><p>{inboxVisible ? '删除清单后，其中的任务会移入“任务”。' : '删除清单后，其中的任务会保留，可在“全部任务”中查看。'}</p><button type="button" className="text-button danger-text" disabled={listBusy} onClick={() => setConfirmListDelete(true)}><Trash2 size={15} />删除清单</button></div>}
         <div className="form-footer"><button type="button" className="button secondary" disabled={listBusy} onClick={() => setListDialog(null)}>取消</button><button className="button primary" disabled={!listName.trim() || listBusy}>{listBusy ? '正在保存…' : '保存清单'}</button></div>
       </form>}
     </Modal>}

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { build } from 'esbuild';
 import electron from 'electron';
+import { readTestWorkspace } from './read-test-workspace.mjs';
 
 const root = path.resolve('.qa'); await mkdir(root, { recursive: true });
 const directory = await mkdtemp(path.join(root, 'settings-'));
@@ -21,6 +22,6 @@ for (const phase of ['seed', 'quiet', 'restore']) {
 }
 const timer = JSON.parse(await readFile(path.join(env.GTODO_DATA_DIR, 'pomodoro.json'), 'utf8'));
 if (timer.session.status !== 'paused') throw new Error('Closing in quit mode must pause the active timer');
-const saved = JSON.parse(await readFile(path.join(env.GTODO_DATA_DIR, 'workspace.json'), 'utf8'));
-if (saved.workspace.notes[0].values.content !== '退出时的最后输入') throw new Error('Closing in quit mode must save the final note draft');
+const saved = await readTestWorkspace(env.GTODO_DATA_DIR);
+if (saved.notes[0].values.content !== '退出时的最后输入') throw new Error('Closing in quit mode must save the final note draft');
 console.log(`Native settings results: ${directory}`);

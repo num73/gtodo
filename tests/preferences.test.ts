@@ -4,7 +4,7 @@ import path from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import { PreferencesStore } from '../electron/preferences';
 import { temporaryDirectory } from './helpers';
-import { creationDefaults, defaultUserPreferences, patchUserPreferences } from '../src/shared/preferences';
+import { creationDefaults, defaultUserPreferences, patchUserPreferences, resolveStartupView } from '../src/shared/preferences';
 import { WorkspaceEngine } from '../src/shared/engine';
 
 test('old local preferences gain compatible defaults without changing saved windows or folder', async t => {
@@ -13,6 +13,8 @@ test('old local preferences gain compatible defaults without changing saved wind
   await writeFile(file, JSON.stringify(legacy));
   const preferences = new PreferencesStore(directory); await preferences.initialize();
   assert.deepEqual(preferences.value.user, defaultUserPreferences);
+  assert.equal(preferences.value.user.sidebarVisible, true);
+  assert.equal(preferences.value.user.inboxVisible, true);
   assert.equal(preferences.value.dataPath, legacy.dataPath);
   assert.deepEqual(preferences.value.noteWindows, legacy.noteWindows);
   await writeFile(file, JSON.stringify({ ...legacy, user: { startupView: 'board' } }));
@@ -24,19 +26,30 @@ test('partial settings writes survive concurrency and restart, and invalid write
   const directory = await temporaryDirectory(t), preferences = new PreferencesStore(directory);
   await preferences.initialize();
   await Promise.all([
-    preferences.update(value => { value.user = patchUserPreferences(value.user, { startupView: 'board', restoreNotes: false }); }),
+    preferences.update(value => { value.user = patchUserPreferences(value.user, { startupView: 'board', restoreNotes: false, sidebarVisible: false, inboxVisible: false }); }),
     preferences.update(value => { value.user = patchUserPreferences(value.user, { closeAction: 'background', noteColor: 'blue' }); }),
     preferences.update(value => { value.user = patchUserPreferences(value.user, { taskNotifications: false, startupView: undefined }); }),
   ]);
-  const expected = { ...defaultUserPreferences, startupView: 'board', restoreNotes: false, closeAction: 'background', noteColor: 'blue', taskNotifications: false };
+  const expected = { ...defaultUserPreferences, startupView: 'board', restoreNotes: false, sidebarVisible: false, inboxVisible: false, closeAction: 'background', noteColor: 'blue', taskNotifications: false };
   assert.deepEqual(preferences.value.user, expected);
   const original = await readFile(preferences.file, 'utf8');
-  for (const patch of [{ startupView: 'unknown' }, { restoreNotes: 'false' }, { boardTextFontSize: 0 }, { boardTextBackground: 'red' }, { dataPath: 'another-folder' }]) {
+  for (const patch of [{ startupView: 'unknown' }, { restoreNotes: 'false' }, { sidebarVisible: 'false' }, { inboxVisible: 'false' }, { boardTextFontSize: 0 }, { boardTextBackground: 'red' }, { dataPath: 'another-folder' }]) {
     await assert.rejects(preferences.update(value => { value.user = patchUserPreferences(value.user, patch); }));
     assert.equal(await readFile(preferences.file, 'utf8'), original);
   }
   const reopened = new PreferencesStore(directory); await reopened.initialize();
   assert.deepEqual(reopened.value.user, expected);
+});
+
+test('removing the default list redirects its startup page without resetting unrelated preferences', () => {
+  const current = { ...defaultUserPreferences, startupView: 'inbox' as const, noteColor: 'blue' as const };
+  const removed = patchUserPreferences(current, { inboxVisible: false });
+  assert.equal(removed.startupView, 'all');
+  assert.equal(removed.noteColor, 'blue');
+  assert.equal(resolveStartupView({ startupView: 'inbox', inboxVisible: false }), 'all');
+  assert.equal(patchUserPreferences(removed, { startupView: 'inbox' }).startupView, 'all');
+  assert.equal(patchUserPreferences(removed, { inboxVisible: true }).startupView, 'all');
+  assert.equal(patchUserPreferences({ ...current, startupView: 'board' }, { inboxVisible: false }).startupView, 'board');
 });
 
 test('creation preferences apply to new notes, linked notes and text while preserving explicit styles and existing content', () => {

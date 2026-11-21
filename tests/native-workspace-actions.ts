@@ -2,6 +2,8 @@ import { app, BrowserWindow, dialog } from 'electron';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { SnapshotFiles } from '../electron/snapshot-files';
+import { withBackupArchive } from '../electron/backup-archive';
 
 assert.ok(process.env.GTODO_DATA_DIR?.startsWith(path.resolve('.qa') + path.sep), 'Only isolated test profiles are allowed');
 app.getAppPath = () => path.resolve('.');
@@ -55,9 +57,27 @@ void (async () => {
   assert.equal((await attempt('chooseDataFolder')).ok, true);
   const state = await evaluate('window.gtodo.getState()');
   assert.equal(state.dataPath, destination); assert.equal(state.workspace.tasks[0].values.title, '切换目录前的最后一个字');
-  const snapshot = JSON.parse(await readFile(path.join(destination, `device-${state.deviceId}.json`), 'utf8'));
+  const snapshot = await new SnapshotFiles().decode(JSON.parse(await readFile(path.join(destination, `device-${state.deviceId}.json`), 'utf8')), destination);
   assert.equal(snapshot.tasks[0].values.title, '切换目录前的最后一个字');
   assert.equal(snapshot.notes[0].values.content, '便签尚未自动保存的最后一个字');
+  const taskId = state.workspace.tasks[0].id;
+  for (const body of ['历史第一稿', '历史第二稿']) await evaluate(`window.gtodo.command({type:'task.update',id:${JSON.stringify(taskId)},patch:{notes:${JSON.stringify(body)}}})`);
+  await until(() => evaluate('document.querySelector("textarea[aria-label=备注]").value === "历史第二稿"'), 'history draft refresh');
+  await evaluate('document.querySelector("[aria-label=正文历史版本]").click()');
+  await until(() => evaluate('document.querySelector("[aria-label=选择历史版本]")?.options.length >= 2'), 'history selector');
+  await evaluate(`(()=>{const select=document.querySelector('[aria-label=选择历史版本]'); select.value=Array.from(select.options).find(option=>option.textContent.includes('历史第一稿')).value;select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await evaluate('Array.from(document.querySelectorAll("button")).find(button=>button.textContent === "还原此版本").click()');
+  await evaluate('Array.from(document.querySelectorAll("button")).find(button=>button.textContent === "确认还原版本").click()');
+  await until(() => evaluate('document.querySelector("textarea[aria-label=备注]").value === "历史第一稿"'), 'history restore');
+  const zipFile = path.join(__dirname, 'backup.zip');
+  dialog.showSaveDialog = (async () => ({ canceled: false, filePath: zipFile })) as typeof dialog.showSaveDialog;
+  assert.equal((await attempt('exportBackup')).ok, true);
+  await withBackupArchive(zipFile, process.env.GTODO_DATA_DIR!, async workspace => {
+    assert.equal(workspace.tasks[0].values.notes, '历史第一稿');
+    assert.ok(workspace.documentRevisions.some(item => item.content === '历史第二稿'));
+  });
+  dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [zipFile] })) as typeof dialog.showOpenDialog;
+  assert.equal((await attempt('importBackup')).ok, true);
   await writeFile(path.join(__dirname, 'result.json'), JSON.stringify({ passed: true, checks: ['failed export preserves file', 'export flushes task and note', 'failed import and relocation preserve workspace', 'relocation flushes drafts', 'note interaction restored'] }, null, 2));
   app.quit();
 })().catch(async error => { await writeFile(path.join(__dirname, 'result.json'), JSON.stringify({ passed: false, error: String(error) })); app.exit(1); });

@@ -106,13 +106,13 @@ test('board images and background survive folder sync, relocation, restart and J
   await first.folder.addBoardImage({ destination: 'card' }, image, '示例图片.png');
   await first.folder.addBoardImage({ destination: 'background' }, image, '背景.png');
   const id = boardAssetIds(first.store.engine.state)[0];
-  assert.deepEqual(await readFile(path.join(first.folder.directory, 'board', 'assets', id)), image);
+  assert.deepEqual(await readFile(path.join(first.folder.directory, 'assets', id)), image);
   await second.folder.changeDirectory(first.folder.directory);
   assert.equal(second.store.engine.state.boardCards.length, 1);
   assert.equal(second.store.engine.state.boards[0].values.backgroundId, id);
   assert.deepEqual((await second.documents.readBoardImage(second.folder.directory, second.store.engine.state, id)).bytes, image);
   const nextFolder = path.join(first.root, 'moved-board'); await mkdir(nextFolder); await first.folder.changeDirectory(nextFolder);
-  assert.deepEqual(await readFile(path.join(nextFolder, 'board', 'assets', id)), image);
+  assert.deepEqual(await readFile(path.join(nextFolder, 'assets', id)), image);
   const restarted = new DataStore(first.root); await restarted.initialize();
   assert.deepEqual(restarted.engine.state.boardCards, first.store.engine.state.boardCards);
   const backup = JSON.parse(await first.documents.backup(first.store.engine.state));
@@ -137,7 +137,7 @@ test('image cleanup protects active backgrounds and recoverable pins, then remov
   await f.folder.update(engine => engine.apply({ type: 'board.update', patch: { backgroundColor: '#abcdef' } }));
   await f.folder.purgeTrash([]);
   await assert.rejects(stat(path.join(f.root, 'media', id)));
-  await assert.rejects(stat(path.join(f.folder.directory, 'board', 'assets', id)));
+  await assert.rejects(stat(path.join(f.folder.directory, 'assets', id)));
 });
 
 test('background preview is staged without saving and image reads reject traversal, unknown IDs and changed bytes', async t => {
@@ -154,7 +154,7 @@ test('background preview is staged without saving and image reads reject travers
 test('board asset directory junctions cannot redirect writes or cleanup outside the data folder', async t => {
   const f = await device(t); const outside = path.join(f.root, 'outside'); await mkdir(outside);
   await writeFile(path.join(outside, 'keep.txt'), '不要修改');
-  try { await symlink(outside, path.join(f.folder.directory, 'board'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  try { await symlink(outside, path.join(f.folder.directory, 'assets'), process.platform === 'win32' ? 'junction' : 'dir'); }
   catch (error) { if (['EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) { t.skip('symlink unavailable'); return; } throw error; }
   await f.folder.addBoardImage({ destination: 'card' }, await png(), '图片.png');
   assert.match(f.folder.status.error!, /符号链接/);

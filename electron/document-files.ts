@@ -3,12 +3,13 @@ import { lstat, mkdir, readFile, realpath, rename, stat } from 'node:fs/promises
 import path from 'node:path';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { z } from 'zod';
-import { assetIdSchema, documentFileName, documentParts, isAssetPath, MAX_IMAGE_BYTES, normalizeAssetPath, type AssetMap, type DocumentFormat, type DocumentTarget } from '../src/shared/documents';
+import { assetIdSchema, documentFileName, documentParts, isAssetPath, sharedAssetId, MAX_IMAGE_BYTES, normalizeAssetPath, type AssetMap, type DocumentFormat, type DocumentTarget } from '../src/shared/documents';
 import type { Workspace } from '../src/shared/model';
 import type { WorkspaceEngine } from '../src/shared/engine';
 import { linkedTaskForNote, linkedTasksByNote } from '../src/shared/note-links';
 import { boardAssetIds } from '../src/shared/board';
 import { atomicWrite } from './storage';
+import { FileReadCache } from './file-io';
 
 const hash = (data: string | Uint8Array) => createHash('sha256').update(data).digest('hex');
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
@@ -20,6 +21,10 @@ function entries(workspace: Workspace): Entry[] {
   return [...workspace.tasks.map(item => ({ kind: 'task' as const, id: item.id, content: item.values.notes, format: item.values.notesFormat, assets: item.values.notesAssets, deleted: item.values.deleted })),
     ...workspace.notes.filter(item => !linked.has(item.id)).map(item => ({ kind: 'note' as const, id: item.id, content: item.values.content, format: item.values.format, assets: item.values.assets, deleted: item.values.deleted }))];
 }
+export function workspaceAssetIds(workspace: Workspace) {
+  return new Set([...entries(workspace).flatMap(entry => Object.values(entry.assets)), ...(workspace.documentRevisions ?? []).flatMap(revision => Object.values(revision.assets)), ...boardAssetIds(workspace)]);
+}
+export const workspaceDocuments = entries;
 export function documentEntry(workspace: Workspace, target: DocumentTarget): Entry {
   if (target.kind === 'note') {
     const note = workspace.notes.find(note => note.id === target.id && !note.values.deleted);
@@ -30,7 +35,7 @@ export function documentEntry(workspace: Workspace, target: DocumentTarget): Ent
   if (!entry) throw new Error('这条记录已不存在。');
   return entry;
 }
-function patch(engine: WorkspaceEngine, entry: Entry, content: string, assets: AssetMap) {
+function patch(engine: Pick<WorkspaceEngine, 'state' | 'apply'>, entry: Entry, content: string, assets: AssetMap) {
   if (entry.kind === 'task') engine.apply({ type: 'task.update', id: entry.id, patch: { notes: content, notesAssets: assets } });
   else engine.apply({ type: 'note.update', id: entry.id, patch: { content, assets } });
 }
@@ -74,16 +79,18 @@ async function safePath(root: string, parts: string[], create = false) {
   }
   return current;
 }
-async function optionalRead(root: string, parts: string[], maximum: number) {
+async function optionalRead(root: string, parts: string[], maximum: number, cache: FileReadCache) {
   try {
     const file = await safePath(root, parts);
-    if ((await stat(file)).size > maximum) throw new Error('文档或图片超过大小限制。');
-    const data = await readFile(file); if (data.length > maximum) throw new Error('文档或图片超过大小限制。');
-    return data;
+    return await cache.read(file, maximum);
   } catch (error) { if (missing(error)) return null; throw error; }
 }
-type Scan = { protected: Set<string>; observed: Map<string, string | null> };
+type Scan = { protected: Set<string>; observed: Map<string, string | null>; changed: Set<string> };
+function imageParts(entry: DocumentTarget, relative: string) { const id = sharedAssetId(relative); return id ? ['assets', id] : [...documentParts(entry), 'assets', relative.slice(7)]; }
 export class DocumentFiles {
+  readonly files = new FileReadCache(64 * 1024 * 1024);
+  private written = new Map<string, string>();
+  private read(root: string, parts: string[], maximum: number) { return optionalRead(root, parts, maximum, this.files); }
   private baseline: Record<string, string> = {};
   private serialized = '{}';
   private initialized = false;
@@ -120,7 +127,7 @@ export class DocumentFiles {
     const cache = path.join(this.directory, 'media'); await mkdir(cache, { recursive: true });
     const file = await safePath(cache, [id]);
     const verified = Buffer.from(bytes);
-    if (!(await optionalRead(cache, [id], MAX_IMAGE_BYTES))?.equals(verified)) await atomicWrite(file, verified);
+    if (!(await this.read(cache, [id], MAX_IMAGE_BYTES))?.equals(verified)) await atomicWrite(file, verified);
     return id;
   }
   async stageBoardImage(bytes: Uint8Array) {
@@ -131,31 +138,32 @@ export class DocumentFiles {
   }
   private async cached(id: string) {
     assetIdSchema.parse(id);
-    const bytes = await optionalRead(path.join(this.directory, 'media'), [id], MAX_IMAGE_BYTES);
+    const bytes = await this.read(path.join(this.directory, 'media'), [id], MAX_IMAGE_BYTES);
     if (bytes && `${hash(bytes)}.${imageType(bytes)}` !== id) throw new Error('本机图片校验失败，请保留图片文件并检查备份。');
     return bytes;
   }
-  async readChanges(root: string, engine: WorkspaceEngine, known: Workspace[]): Promise<Scan> {
+  async readChanges(root: string, engine: Pick<WorkspaceEngine, 'state' | 'apply'>, known: Workspace[]): Promise<Scan> {
     await this.initialize();
-    for (const id of boardAssetIds(engine.state)) {
+    for (const id of workspaceAssetIds(engine.state)) {
       if (await this.cached(id)) continue;
-      const bytes = await optionalRead(root, ['board', 'assets', id], MAX_IMAGE_BYTES);
+      const bytes = await this.read(root, ['assets', id], MAX_IMAGE_BYTES) ?? await this.read(root, ['board', 'assets', id], MAX_IMAGE_BYTES);
       if (bytes) {
         if (`${hash(bytes)}.${imageType(bytes)}` !== id) throw new Error('看板图片尚未完整同步或校验失败，请稍后重试。');
         await this.cacheImage(bytes);
       }
     }
-    const scan: Scan = { protected: new Set(), observed: new Map() };
-    const knownEntries = known.flatMap(entries);
+    const scan: Scan = { protected: new Set(), observed: new Map(), changed: new Set() };
+    const knownEntries = new Map<string, Entry[]>();
+    for (const entry of known.flatMap(entries)) { const key = `${entry.kind}:${entry.id}`, values = knownEntries.get(key) ?? []; values.push(entry); knownEntries.set(key, values); }
     for (const original of entries(engine.state).filter(item => !item.deleted)) {
       const parts = [...documentParts(original), documentFileName(original.format)];
       const key = this.key(root, parts);
-      let bytes = await optionalRead(root, parts, MAX_TEXT_BYTES);
+      let bytes = await this.read(root, parts, MAX_TEXT_BYTES);
       let baselineKey = key;
       const markdownMissing = bytes === null;
       if (markdownMissing) {
         const legacyParts = [...documentParts(original), 'note.txt'];
-        bytes = await optionalRead(root, legacyParts, MAX_TEXT_BYTES);
+        bytes = await this.read(root, legacyParts, MAX_TEXT_BYTES);
         baselineKey = this.key(root, legacyParts);
       }
       let content = original.content;
@@ -165,7 +173,9 @@ export class DocumentFiles {
         diskContent = disk;
         if (disk.length > 100000) throw new Error('备注文件不能超过 100000 个字符。');
         const diskHash = hash(disk); scan.observed.set(key, markdownMissing ? null : diskHash);
-        const knownBodies = knownEntries.filter(item => item.kind === original.kind && item.id === original.id).map(item => item.content);
+        if (this.baseline[baselineKey] !== diskHash || markdownMissing) scan.changed.add(key);
+        const related = knownEntries.get(`${original.kind}:${original.id}`) ?? [];
+        const knownBodies = related.map(item => item.content);
         if (disk !== content && this.baseline[baselineKey] !== diskHash && !knownBodies.includes(disk)) {
           if (!this.settled(key, diskHash)) scan.protected.add(key);
           else {
@@ -173,17 +183,19 @@ export class DocumentFiles {
             content = disk;
           }
         }
-      } else scan.observed.set(key, null);
+      } else { scan.observed.set(key, null); scan.changed.add(key); }
       const assets = { ...original.assets };
       const paths = new Set([...Object.keys(assets), ...referencedImages(content), ...referencedImages(diskContent)]);
       for (const relative of paths) {
-        const assetParts = [...documentParts(original), 'assets', relative.slice(7)];
+        const assetParts = imageParts(original, relative);
         const assetKey = this.key(root, assetParts);
-        const data = await optionalRead(root, assetParts, MAX_IMAGE_BYTES);
+        const data = await this.read(root, assetParts, MAX_IMAGE_BYTES);
         scan.observed.set(assetKey, data ? hash(data) : null);
-        if (!data) continue;
+        if (!data) { scan.changed.add(key); continue; }
         const id = await this.cacheImage(data); const actual = hash(data);
-        const knownAsset = knownEntries.some(item => item.kind === original.kind && item.id === original.id && item.assets[relative] === id);
+        if (sharedAssetId(relative) && sharedAssetId(relative) !== id) throw new Error('共享图片校验失败，请保留原文件并检查备份。');
+        if (this.baseline[assetKey] !== actual) scan.changed.add(key);
+        const knownAsset = (knownEntries.get(`${original.kind}:${original.id}`) ?? []).some(item => item.assets[relative] === id);
         if (assets[relative] !== id && (!assets[relative] || (this.baseline[assetKey] !== actual && !knownAsset))) {
           if (!this.settled(assetKey, actual)) scan.protected.add(assetKey);
           else assets[relative] = id;
@@ -195,17 +207,19 @@ export class DocumentFiles {
   }
   async writeDocuments(root: string, workspace: Workspace, scan: Scan) {
     await this.initialize();
-    for (const id of boardAssetIds(workspace)) {
+    for (const id of workspaceAssetIds(workspace)) {
       const bytes = await this.cached(id); if (!bytes) continue;
-      const parts = ['board', 'assets', id];
-      const old = await optionalRead(root, parts, MAX_IMAGE_BYTES);
+      const parts = ['assets', id];
+      const old = await this.read(root, parts, MAX_IMAGE_BYTES);
       if (!old) await atomicWrite(await safePath(root, parts, true), bytes);
       else if (!old.equals(bytes)) throw new Error('看板图片校验失败，请保留文件并检查备份。');
     }
     for (const entry of entries(workspace).filter(item => !item.deleted)) {
       const parts = [...documentParts(entry), documentFileName(entry.format)]; const key = this.key(root, parts);
+      const signature = hash(entry.content + '\n' + JSON.stringify(entry.assets));
+      if (this.written.get(key) === signature && !scan.changed.has(key) && !scan.protected.size) continue;
       if (!scan.protected.has(key)) {
-        const old = await optionalRead(root, parts, MAX_TEXT_BYTES);
+        const old = await this.read(root, parts, MAX_TEXT_BYTES);
         const oldText = old ? new TextDecoder('utf-8', { fatal: true }).decode(old).replace(/^\ufeff/, '') : null;
         if (scan.observed.get(key) === (oldText === null ? null : hash(oldText))) {
           const file = await safePath(root, parts, true);
@@ -215,7 +229,7 @@ export class DocumentFiles {
           }
           this.baseline[key] = hash(entry.content); this.pending.delete(key);
           const otherParts = [...documentParts(entry), 'note.txt'];
-          const other = await optionalRead(root, otherParts, MAX_TEXT_BYTES);
+          const other = await this.read(root, otherParts, MAX_TEXT_BYTES);
           if (other) {
             const otherText = new TextDecoder('utf-8', { fatal: true }).decode(other);
             if (otherText !== entry.content && this.baseline[this.key(root, otherParts)] !== hash(otherText)) await this.conflict(root, entry, otherText);
@@ -224,14 +238,15 @@ export class DocumentFiles {
         }
       }
       for (const [relative, id] of Object.entries(entry.assets)) {
-        const parts = [...documentParts(entry), 'assets', relative.slice(7)]; const key = this.key(root, parts);
+        const parts = imageParts(entry, relative); const key = this.key(root, parts);
         if (scan.protected.has(key)) continue;
         const bytes = await this.cached(id); if (!bytes) continue;
-        const old = await optionalRead(root, parts, MAX_IMAGE_BYTES);
+        const old = await this.read(root, parts, MAX_IMAGE_BYTES);
         if (scan.observed.get(key) !== (old ? hash(old) : null) && scan.observed.has(key)) continue;
         if (!old?.equals(bytes)) await atomicWrite(await safePath(root, parts, true), bytes);
         this.baseline[key] = hash(bytes); this.pending.delete(key);
       }
+      if (!scan.protected.size) this.written.set(key, signature);
     }
     const next = JSON.stringify(this.baseline);
     if (next !== this.serialized) {
@@ -254,18 +269,19 @@ export class DocumentFiles {
       await atomicWrite(path.join(this.directory, 'document-state.json'), next); this.serialized = next;
     }
   }
-  async readImage(root: string, workspace: Workspace, target: DocumentTarget, relative: string) {
+  async readImage(root: string, workspace: Workspace, target: DocumentTarget, relative: string, version?: string) {
     if (!isAssetPath(relative)) throw new Error('图片路径无效。');
-    const entry = documentEntry(workspace, target); const id = entry.assets[relative];
+    const entry = documentEntry(workspace, target);
+    const id = version && workspace.documentRevisions.some(revision => revision.kind === entry.kind && revision.targetId === entry.id && revision.assets[relative] === version) ? version : entry.assets[relative];
     if (id) { const bytes = await this.cached(id); if (bytes) return { bytes, type: imageType(bytes) }; }
-    const bytes = await optionalRead(root, [...documentParts(entry), 'assets', relative.slice(7)], MAX_IMAGE_BYTES);
+    const bytes = await this.read(root, imageParts(entry, relative), MAX_IMAGE_BYTES);
     if (!bytes) throw new Error('图片尚未同步或已移动。');
     return { bytes, type: imageType(bytes) };
   }
   async backup(workspace: Workspace) {
     const attachments: Record<string, string> = {};
     let size = Buffer.byteLength(JSON.stringify(workspace));
-    for (const id of new Set([...entries(workspace).flatMap(entry => Object.values(entry.assets)), ...boardAssetIds(workspace)])) {
+    for (const id of workspaceAssetIds(workspace)) {
       const data = await this.cached(id); if (!data) throw new Error('有图片尚未同步完成，请稍后再导出备份。');
       attachments[id] = data.toString('base64'); size += attachments[id].length;
       if (size > MAX_BACKUP_BYTES - 1024 * 1024) throw new Error('含图片的备份超过 160 MB，请直接备份整个数据文件夹。');
@@ -274,10 +290,14 @@ export class DocumentFiles {
     if (Buffer.byteLength(serialized) > MAX_BACKUP_BYTES) throw new Error('含图片的备份超过 160 MB，请直接备份整个数据文件夹。');
     return serialized;
   }
+  async assetFile(id: string) {
+    const data = await this.cached(id); if (!data) throw new Error('有图片尚未同步完成，请稍后再导出备份。');
+    return { file: await safePath(this.directory, ['media', id]), size: data.length };
+  }
   async readBoardImage(root: string, workspace: Workspace, value: string) {
     const id = assetIdSchema.parse(value);
     if (!boardAssetIds(workspace).includes(id) && !this.stagedBoardImages.has(id)) throw new Error('看板图片不存在。');
-    const bytes = await this.cached(id) ?? await optionalRead(root, ['board', 'assets', id], MAX_IMAGE_BYTES);
+    const bytes = await this.cached(id) ?? await this.read(root, ['assets', id], MAX_IMAGE_BYTES) ?? await this.read(root, ['board', 'assets', id], MAX_IMAGE_BYTES);
     if (!bytes) throw new Error('图片尚未同步。');
     if (`${hash(bytes)}.${imageType(bytes)}` !== id) throw new Error('看板图片校验失败。');
     return { bytes, type: imageType(bytes) };

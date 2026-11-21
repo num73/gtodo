@@ -42,12 +42,20 @@ export class PreferencesStore {
   async initialize() {
     try { this.value = schema.parse(JSON.parse(await readFile(this.file, 'utf8'))); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('本机设置无法读取。请保留 preferences.json 并检查备份，任务数据没有被修改。');
+      try {
+        this.value = schema.parse(JSON.parse(await readFile(`${this.file}.bak`, 'utf8')));
+        await atomicWrite(this.file, JSON.stringify(this.value, null, 2));
+      } catch (backupError) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || (backupError as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('本机设置与备份无法读取。请保留 preferences.json 并检查备份，任务数据没有被修改。');
+      }
     }
   }
   update(change: (value: Preferences) => void) {
     const operation = this.queue.then(async () => {
       const draft = structuredClone(this.value); change(draft); const next = schema.parse(draft);
+      const backup = structuredClone(this.value);
+      if (next.user.inboxPurged) { backup.user.inboxPurged = true; backup.user.inboxVisible = false; if (backup.user.startupView === 'inbox') backup.user.startupView = 'all'; }
+      await atomicWrite(`${this.file}.bak`, JSON.stringify(backup, null, 2));
       await atomicWrite(this.file, JSON.stringify(next, null, 2)); this.value = next;
     });
     this.queue = operation.catch(() => {}); return operation;

@@ -70,6 +70,9 @@ test('pane widths persist locally and shrink only for display when the task area
   assert.deepEqual(wide, { sidebar: 400, details: 600 });
   const smaller = fitPaneLayout(reopened.value.paneLayout, 1121, true);
   assert.ok(1121 - smaller.sidebar - smaller.details - 12 >= 300);
+  const hidden = fitPaneLayout(reopened.value.paneLayout, 1121, true, false);
+  assert.equal(hidden.details, 600, 'Hidden navigation must release space for the details pane');
+  assert.ok(1121 - hidden.details - 6 >= 300);
   assert.deepEqual(reopened.value.paneLayout, { sidebar: 400, details: 600 });
   await assert.rejects(preferences.update(value => { value.paneLayout.sidebar = 20; }));
 });

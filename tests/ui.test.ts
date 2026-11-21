@@ -10,8 +10,9 @@ import type { PomodoroSnapshot } from '../src/shared/pomodoro';
 import { defaultPaneLayout, type PaneLayout } from '../src/shared/layout';
 import { trashRecords } from '../src/shared/trash';
 import { flushMainDrafts } from '../src/notes/draft';
-import { creationDefaults, defaultUserPreferences, patchUserPreferences, startupViews, type UserPreferences } from '../src/shared/preferences';
+import { creationDefaults, defaultUserPreferences, patchUserPreferences, resolveStartupView, startupViews, type UserPreferences } from '../src/shared/preferences';
 import { emptyGitStatus } from '../src/shared/git';
+import { documentHistory } from '../src/shared/document-history';
 import type { GitConfigure } from '../src/shared/git';
 
 // Renderer behavior is tested in an isolated DOM, without controlling the user's preview window.
@@ -63,6 +64,8 @@ async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout, initialP
   const snapshot = (): AppState => ({ workspace: structuredClone(engine.state), deviceId: engine.deviceId, dataPath, notice: null, folder: { error: null, lastRead: null }, zoom, version: '0.2.1', mainWindow: { ...mainWindow }, paneLayout: { ...paneLayout }, preferences: { ...preferences }, pomodoroWindow: { ...pomodoroWindow }, noteWindows: {}, outlook, gitEnabled: git.enabled, notebookRequest });
   const publish = () => { for (const listener of stateListeners) listener(snapshot()); };
   const api: DesktopAPI = {
+    getDocumentHistory: async target => documentHistory(engine.state, target),
+    restoreDocumentVersion: async (target, versionId) => { engine.restoreDocumentVersion(target, versionId); publish(); return snapshot(); },
     getGitStatus: async () => git, configureGit: async input => { git = { ...git, ...input, repository: git.repository || !!input.initialize, branch: 'main' }; publish(); return git; }, gitAction: async () => git,
     getPomodoro: async () => timer.snapshot(), pomodoroCommand: command => timer.command(command),
     onPomodoro: callback => { timerListeners.add(callback); return () => { timerListeners.delete(callback); }; },
@@ -100,7 +103,7 @@ async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout, initialP
   };
   window.gtodo = api;
   render(React.createElement(App));
-  await screen.findByRole('heading', { name: startupViews.find(view => view.value === preferences.startupView)!.label });
+  await screen.findByRole('heading', { name: startupViews.find(view => view.value === resolveStartupView(preferences))!.label });
   const user = userEvent.setup({ document: dom.window.document });
   const add = async (title: string) => {
     await user.type(screen.getByRole('textbox', { name: '添加任务' }), title);
@@ -232,6 +235,7 @@ test('navigation stays visible when both columns fit and returns after expanding
   const navigation = document.getElementById('list-navigation')!;
   assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'sidebar');
   assert.equal(navigation.hasAttribute('inert'), false);
+  assert.equal(screen.getByRole('button', { name: '收起清单导航' }).getAttribute('aria-expanded'), 'true');
   assert.ok(screen.getByRole('separator', { name: '调整清单栏宽度' }));
   // An oversized saved preference must shrink to fit instead of hiding navigation.
   await resize(500);
@@ -244,6 +248,67 @@ test('navigation stays visible when both columns fit and returns after expanding
   await resize(640);
   assert.equal(navigation.hasAttribute('inert'), false);
   assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'sidebar');
+});
+
+test('wide navigation toggles without remounting task drafts or forgetting pane widths', async () => {
+  await resize(1121);
+  const { user, api, add } = await mount({ sidebar: 400, details: 600 });
+  await add('隐藏导航时继续编辑');
+  await user.click(screen.getByText('隐藏导航时继续编辑', { exact: true }));
+  const editor = screen.getByRole('textbox', { name: '备注' }) as HTMLTextAreaElement;
+  await user.type(editor, '尚未结束的编辑');
+  const toggle = screen.getByRole('button', { name: '收起清单导航' });
+  const originalIcon = toggle.innerHTML;
+  await user.click(toggle);
+  await waitFor(() => assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'hidden'));
+  assert.equal(document.getElementById('list-navigation')!.hasAttribute('inert'), true);
+  assert.equal(screen.queryByRole('separator', { name: '调整清单栏宽度' }), null);
+  assert.equal(screen.getByRole('separator', { name: '调整任务详情宽度' }).getAttribute('aria-valuenow'), '600');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.notEqual(toggle.innerHTML, originalIcon);
+  assert.equal(screen.getByRole('textbox', { name: '备注' }), editor);
+  assert.equal(editor.value, '尚未结束的编辑');
+  assert.equal((await api.getState()).preferences.sidebarVisible, false);
+  await user.click(screen.getByRole('button', { name: '展开清单导航' }));
+  await waitFor(() => assert.equal(toggle.getAttribute('aria-expanded'), 'true'));
+  assert.equal(screen.getByRole('separator', { name: '调整清单栏宽度' }).getAttribute('aria-valuenow'), '400');
+  assert.deepEqual((await api.getState()).paneLayout, { sidebar: 400, details: 600 });
+  assert.equal(screen.getByRole('textbox', { name: '备注' }), editor);
+  assert.equal(editor.value, '尚未结束的编辑');
+});
+
+test('hidden navigation survives window resizing and can be restored by task search', async () => {
+  const { user, api } = await mount(defaultPaneLayout, { sidebarVisible: false });
+  assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'hidden');
+  await resize(420);
+  await user.click(screen.getByRole('button', { name: '展开清单导航' }));
+  await waitFor(() => assert.equal(document.activeElement, screen.getByRole('textbox', { name: '搜索任务' })));
+  await user.keyboard('{Escape}');
+  await waitFor(() => assert.equal(document.activeElement, screen.getByRole('button', { name: '展开清单导航' })));
+  await resize(1320);
+  assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'hidden');
+  assert.equal((await api.getState()).preferences.sidebarVisible, false);
+  await user.keyboard('{Control>}k{/Control}');
+  await waitFor(() => assert.equal(document.activeElement, screen.getByRole('textbox', { name: '搜索任务' })));
+  assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'sidebar');
+  await user.type(screen.getByRole('textbox', { name: '搜索任务' }), '搜索词');
+  await user.click(screen.getByRole('button', { name: '收起清单导航' }));
+  await waitFor(() => assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'hidden'));
+  await user.keyboard('{Escape}');
+  assert.equal(document.activeElement, screen.getByRole('button', { name: '展开清单导航' }));
+});
+
+test('a failed navigation preference save retains the current layout and allows retry', async () => {
+  const { user, api } = await mount();
+  const save = api.setPreferences;
+  api.setPreferences = async () => { throw new Error('磁盘不可写'); };
+  await user.click(screen.getByRole('button', { name: '收起清单导航' }));
+  await screen.findByText('导航显示设置未能保存，请重试。');
+  assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'sidebar');
+  assert.equal((await api.getState()).preferences.sidebarVisible, true);
+  api.setPreferences = save;
+  await user.click(screen.getByRole('button', { name: '收起清单导航' }));
+  await waitFor(() => assert.equal(document.querySelector('.app-shell')?.getAttribute('data-navigation'), 'hidden'));
 });
 
 test('board resize at the canvas edge keeps the origin fixed and clamps the size', async () => {
@@ -936,12 +1001,137 @@ test('steps can be renamed and a deletion can be undone without losing the name'
   assert.equal(engine.state.steps[0].values.title, '改名后的步骤');
 });
 
+test('default list deletion saves drafts, supports cancel and undo, and retains every task', async () => {
+  const { engine, api, user, add } = await mount(defaultPaneLayout, { startupView: 'inbox' });
+  await add('默认清单中的任务');
+  await act(async () => {
+    await api.command({ type: 'task.add', title: '已完成的任务', listId: 'inbox' });
+    await api.command({ type: 'task.update', id: engine.state.tasks[1].id, patch: { completed: true } });
+  });
+  await user.click(screen.getByText('默认清单中的任务', { exact: true }));
+  fireEvent.change(screen.getByRole('textbox', { name: '备注' }), { target: { value: '删除清单前最后输入的备注' } });
+  await user.click(screen.getByRole('button', { name: '管理清单 任务' }));
+  await screen.findByRole('dialog', { name: '删除清单' });
+  assert.equal(engine.state.tasks[0].values.notes, '删除清单前最后输入的备注');
+  const preserved = structuredClone(engine.state);
+  assert.equal((await api.getState()).preferences.inboxVisible, true);
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  assert.equal((await api.getState()).preferences.inboxVisible, true);
+  await user.click(screen.getByRole('button', { name: '删除清单' }));
+  await user.click(screen.getByRole('button', { name: '确认删除清单' }));
+  await screen.findByRole('heading', { name: '全部任务' });
+  assert.equal(screen.queryByRole('button', { name: '管理清单 任务' }), null);
+  assert.equal((await api.getState()).preferences.inboxVisible, false);
+  assert.equal((await api.getState()).preferences.startupView, 'all');
+  assert.deepEqual(engine.state, preserved);
+  await user.click(screen.getByText('默认清单中的任务', { exact: true }));
+  assert.equal(screen.getByRole('option', { name: '未分类' }).getAttribute('value'), 'inbox');
+  assert.equal((screen.getByRole('textbox', { name: '备注' }) as HTMLTextAreaElement).value, '删除清单前最后输入的备注');
+  await user.click(screen.getByRole('button', { name: '撤销' }));
+  await screen.findByRole('button', { name: '管理清单 任务' });
+  assert.equal((await api.getState()).preferences.inboxVisible, true);
+  assert.deepEqual(engine.state, preserved);
+});
+
+test('default list deletion failure keeps the confirmation for retry and settings can restore the list', async () => {
+  const { api, user } = await mount(defaultPaneLayout, { startupView: 'inbox' });
+  await user.click(screen.getByRole('button', { name: '删除清单' }));
+  const setPreferences = api.setPreferences;
+  api.setPreferences = async () => { throw new Error('清单设置保存失败'); };
+  await user.click(screen.getByRole('button', { name: '确认删除清单' }));
+  await within(screen.getByRole('dialog', { name: '删除清单' })).findByRole('alert');
+  assert.equal((await api.getState()).preferences.inboxVisible, true);
+  assert.ok(screen.getByRole('button', { name: '管理清单 任务' }));
+  api.setPreferences = setPreferences;
+  await user.click(screen.getByRole('button', { name: '确认删除清单' }));
+  await screen.findByRole('heading', { name: '全部任务' });
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  assert.equal((screen.getByRole('combobox', { name: '启动默认页面' }) as HTMLSelectElement).value, 'all');
+  assert.equal(within(screen.getByRole('combobox', { name: '启动默认页面' })).queryByRole('option', { name: '任务' }), null);
+  await user.click(screen.getByRole('tab', { name: '显示与样式' }));
+  await user.click(screen.getByRole('tab', { name: '数据与同步' }));
+  await user.click(screen.getByRole('button', { name: '还原清单' }));
+  assert.equal((await api.getState()).preferences.inboxVisible, true);
+  await user.click(screen.getByRole('button', { name: '关闭对话框' }));
+  assert.ok(screen.getByRole('heading', { name: '全部任务' }));
+  assert.ok(screen.getByRole('button', { name: '管理清单 任务' }));
+});
+
+test('a removed default list stays unavailable at startup and task creation and list deletion use all tasks', async () => {
+  const { api, engine, user, add } = await mount(defaultPaneLayout, { startupView: 'inbox', inboxVisible: false });
+  assert.ok(screen.getByRole('heading', { name: '全部任务' }));
+  assert.equal(screen.queryByRole('button', { name: '管理清单 任务' }), null);
+  await user.click(screen.getByRole('button', { name: '我的看板' }));
+  await screen.findByRole('heading', { name: '我的看板' });
+  await user.keyboard('{Control>}n{/Control}');
+  await screen.findByRole('heading', { name: '全部任务' });
+  await user.type(screen.getByRole('textbox', { name: '搜索任务' }), '不会匹配');
+  await add('搜索期间新增的任务');
+  await screen.findByRole('heading', { name: '全部任务' });
+  await user.click(screen.getByRole('button', { name: /^计划/ }));
+  await user.click(screen.getByRole('button', { name: '清除新任务截止日期' }));
+  await add('清除日期后的新任务');
+  await screen.findByRole('heading', { name: '全部任务' });
+  await act(async () => { await api.command({ type: 'list.add', name: '临时清单', color: 'blue' }); });
+  await user.click(screen.getByRole('button', { name: '编辑或删除清单 临时清单' }));
+  await user.click(screen.getByRole('button', { name: '删除清单' }));
+  assert.match(screen.getByRole('dialog', { name: '删除清单' }).textContent!, /全部任务/);
+  await user.click(screen.getByRole('button', { name: '确认删除清单' }));
+  await screen.findByRole('heading', { name: '全部任务' });
+  assert.equal(engine.state.lists[0].values.deleted, true);
+  assert.equal(engine.state.tasks.length, 2);
+  assert.ok(engine.state.tasks.every(task => !task.values.deleted && task.values.listId === 'inbox'));
+  assert.equal(screen.queryByRole('button', { name: '管理清单 任务' }), null);
+});
+
+test('default list is restored or permanently removed only from data recycle settings, with cancel and retry', async () => {
+  const { api, engine, user, add } = await mount(defaultPaneLayout, { startupView: 'all', inboxVisible: false });
+  await add('必须保留的任务'); const before = structuredClone(engine.state);
+  await user.click(screen.getByRole('button', { name: '打开设置' }));
+  await user.click(screen.getByRole('tab', { name: '显示与样式' }));
+  assert.equal(screen.queryByRole('button', { name: '还原清单' }), null);
+  await user.click(screen.getByRole('tab', { name: '数据与同步' }));
+  assert.ok(screen.getByRole('button', { name: '打开回收站' }));
+  await user.click(screen.getByRole('button', { name: '永久删除清单' }));
+  let dialog = screen.getByRole('dialog', { name: '永久删除“任务”清单' });
+  await user.click(within(dialog).getByRole('button', { name: '取消' }));
+  assert.equal((await api.getState()).preferences.inboxPurged, false);
+  await user.click(screen.getByRole('button', { name: '永久删除清单' }));
+  dialog = screen.getByRole('dialog', { name: '永久删除“任务”清单' });
+  const save = api.setPreferences; api.setPreferences = async () => { throw new Error('模拟保存失败'); };
+  await user.click(within(dialog).getByRole('button', { name: '确认永久删除' }));
+  await within(dialog).findByRole('alert'); assert.equal((await api.getState()).preferences.inboxPurged, false);
+  api.setPreferences = save;
+  await user.click(within(dialog).getByRole('button', { name: '确认永久删除' }));
+  assert.equal((await api.getState()).preferences.inboxPurged, true);
+  assert.equal(screen.queryByRole('button', { name: '还原清单' }), null);
+  assert.deepEqual(engine.state, before);
+});
+
+test('document history saves pending text before opening and restores an earlier version after confirmation', async () => {
+  const { api, engine, user, add } = await mount(); await add('历史测试');
+  await user.click(screen.getByText('历史测试', { exact: true })); const id = engine.state.tasks[0].id;
+  await act(async () => { await api.command({ type: 'task.update', id, patch: { notes: '第一稿' } }); });
+  fireEvent.change(screen.getByRole('textbox', { name: '备注' }), { target: { value: '还未自动保存的第二稿' } });
+  await user.click(screen.getByRole('button', { name: '正文历史版本' }));
+  const dialog = await screen.findByRole('dialog', { name: '正文历史版本' });
+  assert.equal(engine.state.tasks[0].values.notes, '还未自动保存的第二稿');
+  const first = documentHistory(engine.state, { kind: 'task', id }).versions.find(item => item.content === '第一稿')!;
+  await user.selectOptions(await within(dialog).findByRole('combobox', { name: '选择历史版本' }), first.id);
+  await user.click(within(dialog).getByRole('button', { name: '还原此版本' }));
+  assert.equal(engine.state.tasks[0].values.notes, '还未自动保存的第二稿');
+  await user.click(within(dialog).getByRole('button', { name: '确认还原版本' }));
+  assert.equal(engine.state.tasks[0].values.notes, '第一稿');
+  assert.ok(engine.state.documentRevisions.some(item => item.content === '还未自动保存的第二稿'));
+});
+
 test('list deletion requires a deliberate confirmation and preserves its tasks', async () => {
   const { engine, user, add } = await mount();
   await user.click(screen.getAllByRole('button', { name: '新建清单' })[0]);
   await user.type(screen.getByLabelText('清单名称'), '有任务的清单');
   await user.click(screen.getByRole('button', { name: '保存清单' }));
   await screen.findByRole('heading', { name: '有任务的清单' }); await add('需要保留的任务');
+  assert.equal(screen.getByRole('button', { name: '编辑清单' }).textContent, '编辑清单');
   await user.click(screen.getByRole('button', { name: '编辑清单' }));
   await user.click(screen.getByRole('button', { name: '删除清单' }));
   assert.equal(engine.state.lists[0].values.deleted, false);
@@ -953,6 +1143,52 @@ test('list deletion requires a deliberate confirmation and preserves its tasks',
   assert.equal(engine.state.lists[0].values.deleted, true);
   assert.equal(engine.state.tasks[0].values.deleted, false);
   assert.equal(engine.state.tasks[0].values.listId, 'inbox');
+});
+
+test('sidebar list options work from search, support renaming, and preserve tasks when deletion is cancelled or fails', async () => {
+  const { engine, api, user } = await mount();
+  let listId = '';
+  await act(async () => {
+    await api.command({ type: 'list.add', name: '要管理的清单', color: 'blue' });
+    listId = engine.state.lists[0].id;
+    await api.command({ type: 'list.add', name: '保留的清单', color: 'green' });
+    await api.command({ type: 'task.add', title: '保留正文的任务', listId });
+    await api.command({ type: 'task.update', id: engine.state.tasks[0].id, patch: { notes: '需要保留的备注', completed: true } });
+  });
+  await user.type(screen.getByRole('textbox', { name: '搜索任务' }), '保留正文');
+  assert.equal(screen.queryByRole('button', { name: '编辑清单' }), null);
+  const options = screen.getByRole('button', { name: '编辑或删除清单 要管理的清单' });
+  await user.click(options);
+  await screen.findByRole('dialog', { name: '编辑清单' });
+  assert.equal((screen.getByLabelText('清单名称') as HTMLInputElement).value, '要管理的清单');
+  await user.click(screen.getByRole('button', { name: '删除清单' }));
+  await screen.findByText('删除“要管理的清单”？其中的 1 个任务会移入“任务”，内容保留。');
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  assert.equal(engine.state.lists[0].values.deleted, false);
+  await user.clear(screen.getByLabelText('清单名称'));
+  await user.type(screen.getByLabelText('清单名称'), '改名后的清单');
+  await user.click(screen.getByRole('button', { name: '保存清单' }));
+  assert.equal((screen.getByRole('textbox', { name: '搜索任务' }) as HTMLInputElement).value, '保留正文');
+  await user.click(await screen.findByRole('button', { name: '编辑或删除清单 改名后的清单' }));
+  await user.click(screen.getByRole('button', { name: '删除清单' }));
+  const command = api.command;
+  api.command = async input => {
+    if (input.type === 'list.update' && input.patch.deleted) throw new Error('清单保存失败');
+    return command(input);
+  };
+  await user.click(screen.getByRole('button', { name: '确认删除清单' }));
+  await within(screen.getByRole('dialog', { name: '删除清单' })).findByText('清单保存失败');
+  assert.equal(engine.state.lists[0].values.deleted, false);
+  assert.equal(engine.state.tasks[0].values.listId, listId);
+  api.command = command;
+  await user.click(screen.getByRole('button', { name: '确认删除清单' }));
+  await screen.findByRole('heading', { name: '任务' });
+  assert.equal(engine.state.lists[0].values.deleted, true);
+  assert.equal(engine.state.lists[1].values.deleted, false);
+  assert.equal(engine.state.tasks[0].values.deleted, false);
+  assert.equal(engine.state.tasks[0].values.listId, 'inbox');
+  assert.equal(engine.state.tasks[0].values.notes, '需要保留的备注');
+  assert.equal(engine.state.tasks[0].values.completed, true);
 });
 
 test('note-gallery deletion presents its usable undo inside the active modal', async () => {

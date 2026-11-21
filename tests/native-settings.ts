@@ -35,6 +35,15 @@ void (async () => {
   await until(() => reminderTick && timerTick, 'startup restored');
   const get = () => evaluate('window.gtodo.getState()');
   if (phase === 'seed') {
+    assert.equal((await get()).preferences.sidebarVisible, true);
+    assert.equal((await get()).preferences.inboxVisible, true);
+    await evaluate(`document.querySelector('[aria-label="管理清单 任务"]').click()`);
+    await until(() => evaluate('document.querySelector("dialog")?.getAttribute("aria-label") === "删除清单"'), 'default list confirmation');
+    await evaluate('document.querySelector("dialog .danger-button").click()');
+    await until(async () => !(await get()).preferences.inboxVisible, 'remove default list');
+    await until(() => evaluate('!document.querySelector("dialog")'), 'confirmation closed');
+    await evaluate('document.querySelector(".navigation-toggle").click()');
+    await until(() => evaluate('document.querySelector(".app-shell").dataset.navigation === "hidden"'), 'hide navigation');
     await evaluate('window.gtodo.setPreferences({startupView:"board",closeAction:"background",noteColor:"blue",taskNotifications:false,pomodoroNotifications:false})');
     main.close(); await until(() => !main.isVisible(), 'background close');
     assert.equal(main.isDestroyed(), false);
@@ -93,6 +102,19 @@ void (async () => {
     assert.equal(BrowserWindow.getAllWindows().length, 1);
     assert.equal(await evaluate('document.querySelector("h1").textContent'), '我的看板');
     const state = await get();
+    assert.equal(state.preferences.sidebarVisible, false);
+    assert.equal(state.preferences.inboxVisible, false);
+    assert.equal(await evaluate(`!!document.querySelector('[aria-label="管理清单 任务"]')`), false);
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".sidebar")).display'), 'none');
+    await evaluate('document.querySelector(".navigation-toggle").click()');
+    await until(() => evaluate('document.querySelector(".app-shell").dataset.navigation === "sidebar"'), 'restore navigation after restart');
+    await evaluate('document.querySelector("[aria-label=打开设置]").click()');
+    await until(() => evaluate('!!document.querySelector(".settings-tabs")'), 'restore list settings');
+    await evaluate('document.getElementById("settings-tab-3").click()');
+    await evaluate('Array.from(document.querySelectorAll("button")).find(button => button.textContent === "还原清单").click()');
+    await until(async () => (await get()).preferences.inboxVisible, 'restore default list');
+    await evaluate('document.querySelector("[aria-label=关闭对话框]").click()');
+    assert.equal(await evaluate('document.querySelector("h1").textContent'), '我的看板');
     assert.equal(state.preferences.noteColor, 'blue');
     assert.equal(state.noteWindows[state.workspace.notes[0].id].open, false);
     assert.equal(state.pomodoroWindow.open, false);
@@ -102,6 +124,9 @@ void (async () => {
     await result({ passed: true, checks: ['preferences survive restart', 'restoration off preserves content and window history', 'auto close quits with no active windows'] });
     main.close();
   } else {
+    assert.equal((await get()).preferences.sidebarVisible, true);
+    assert.equal((await get()).preferences.inboxVisible, true);
+    assert.equal(await evaluate(`!!document.querySelector('[aria-label="管理清单 任务"]')`), true);
     const note = await until(() => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().includes('note=')), 'restored note');
     assert.equal(note.isVisible(), true);
     assert.ok(BrowserWindow.getAllWindows().some(window => window.isVisible() && window.webContents.getURL().includes('window=pomodoro')));

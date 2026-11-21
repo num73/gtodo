@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { build } from 'esbuild';
 import electron from 'electron';
+import { readTestWorkspace } from './read-test-workspace.mjs';
 const root = path.resolve('.qa'); await mkdir(root, { recursive: true });
 const directory = await mkdtemp(path.join(root, 'markdown-'));
 const main = path.join(directory, 'main.cjs');
@@ -15,7 +16,7 @@ try {
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
   const result = JSON.parse(await readFile(path.join(directory, 'result.json'), 'utf8'));
   if (code !== 0 || !result.passed) throw new Error(result.error || `Markdown test exited with ${code}`);
-  const saved = JSON.parse(await readFile(path.join(env.GTODO_DATA_DIR, 'workspace.json'), 'utf8'));
-  if (!saved.workspace.notes[0].values.content.endsWith('退出前最后一个字')) throw new Error('Final live editor input was not saved');
+  const saved = await readTestWorkspace(env.GTODO_DATA_DIR);
+  if (!saved.notes[0].values.content.endsWith('退出前最后一个字')) throw new Error('Final live editor input was not saved');
   console.log(`Native Markdown results: ${directory}`);
 } finally { clearTimeout(timeout); }

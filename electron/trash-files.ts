@@ -42,13 +42,14 @@ function referencedAssets(workspaces: Workspace[]) {
   return new Set(workspaces.flatMap(workspace => [
     ...workspace.tasks.flatMap(item => Object.values(item.values.notesAssets)),
     ...workspace.notes.flatMap(item => Object.values(item.values.assets)),
+    ...(workspace.documentRevisions ?? []).flatMap(item => Object.values(item.assets)),
     ...boardAssetIds(workspace),
   ]));
 }
-async function cleanupPlan(root: string, localRoot: string, workspace: Workspace, backup: Workspace) {
+async function cleanupPlan(root: string, localRoot: string, workspace: Workspace, backup: Workspace | Workspace[]) {
   const plan = newPlan();
   for (const marker of workspace.purged) if (marker.kind === 'task' || marker.kind === 'note') await scan(root, documentParts({ kind: marker.kind, id: marker.id }), plan);
-  const used = referencedAssets([workspace, backup]);
+  const used = referencedAssets([workspace, ...Array.isArray(backup) ? backup : [backup]]);
   try {
     const cache = await checked(localRoot, ['media']);
     if (!cache.info.isDirectory()) throw new Error('图片缓存路径不是文件夹。');
@@ -60,28 +61,32 @@ async function cleanupPlan(root: string, localRoot: string, workspace: Workspace
       }
     }
   } catch (error) { if (!missing(error)) throw error; }
-  try {
-    const assets = await checked(root, ['board', 'assets']);
+  for (const parts of [['assets'], ['board', 'assets']]) try {
+    const assets = await checked(root, parts);
     if (!assets.info.isDirectory()) throw new Error('看板图片路径不是文件夹。');
     for (const name of await readdir(assets.file)) {
       if (assetIdSchema.safeParse(name).success && !used.has(name)) {
-        const value = await checked(root, ['board', 'assets', name]);
+        const value = await checked(root, [...parts, name]);
         if (!value.info.isFile()) throw new Error('看板图片被其他文件占用。');
-        await scan(root, ['board', 'assets', name], plan);
+        await scan(root, [...parts, name], plan);
       }
     }
   } catch (error) { if (!missing(error)) throw error; }
   return plan;
 }
-export async function inspectTrash(root: string, localRoot: string, workspace: Workspace, backup: Workspace): Promise<TrashSnapshot> {
+export async function inspectTrash(root: string, localRoot: string, workspace: Workspace, backup: Workspace | Workspace[]): Promise<TrashSnapshot> {
   const items: TrashItem[] = trashRecords(workspace);
   for (const item of items) if (item.kind === 'task' || item.kind === 'note') {
-    const plan = newPlan(); await scan(root, documentParts({ kind: item.kind, id: item.id }), plan); item.bytes = bytes(plan);
+    const plan = newPlan(); await scan(root, documentParts({ kind: item.kind, id: item.id }), plan);
+    const record = item.kind === 'task' ? workspace.tasks.find(record => record.id === item.id) : workspace.notes.find(record => record.id === item.id);
+    const assetIds = new Set([...(record ? Object.values('notesAssets' in record.values ? record.values.notesAssets : record.values.assets) : []), ...workspace.documentRevisions.filter(revision => revision.kind === item.kind && revision.targetId === item.id).flatMap(revision => Object.values(revision.assets))]);
+    for (const id of assetIds) await scan(root, ['assets', id], plan);
+    item.bytes = bytes(plan);
   }
   const residual = await cleanupPlan(root, localRoot, workspace, backup);
   return { items, residualBytes: bytes(residual), residualFiles: residual.files.length + residual.directories.length, error: null };
 }
-export async function cleanTrashFiles(root: string, localRoot: string, workspace: Workspace, backup: Workspace) {
+export async function cleanTrashFiles(root: string, localRoot: string, workspace: Workspace, backup: Workspace | Workspace[]) {
   // Build and validate the complete plan before the first filesystem deletion.
   const plan = await cleanupPlan(root, localRoot, workspace, backup);
   let freedBytes = 0;

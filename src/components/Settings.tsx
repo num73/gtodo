@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { FolderOpen, RefreshCw, Check, Download, Upload, AlertCircle, Minus, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { noteColors, noteColorNames, zoomSteps, type AppState, type DesktopAPI, type ZoomAction } from '../shared/model';
-import { startupViews, type UserPreferences } from '../shared/preferences';
+import { resolveStartupView, startupViews, type UserPreferences } from '../shared/preferences';
 import { defaultPaneLayout } from '../shared/layout';
 import { textBackgrounds } from '../shared/board';
 import type { PomodoroController } from '../pomodoro/usePomodoro';
@@ -18,6 +18,7 @@ export default function Settings({ state, api, pomodoro, close, update, toast }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [trashOpen, setTrashOpen] = useState(false);
+  const [purgeInbox, setPurgeInbox] = useState(false);
   const [colorEdit, setColorEdit] = useState<{ key: 'boardTextBackground' | 'boardTextColor'; label: string; value: string } | null>(null);
   async function execute(action: () => Promise<unknown>) {
     setBusy(true); setError('');
@@ -37,7 +38,7 @@ export default function Settings({ state, api, pomodoro, close, update, toast }:
       }}>{name}</button>)}</div>
       <p className="setting-description settings-save-hint">偏好仅用于本机。自定义颜色和时长点击保存，其他选项自动保存。</p>
       <section id="settings-panel-0" role="tabpanel" aria-labelledby="settings-tab-0" hidden={category !== 0}>
-        <label className="settings-option"><span><strong>启动默认页面</strong><small>下次打开应用时生效。</small></span><select aria-label="启动默认页面" value={prefs.startupView} disabled={busy} onChange={event => preference({ startupView: event.target.value as UserPreferences['startupView'] })}>{startupViews.map(view => <option key={view.value} value={view.value}>{view.label}</option>)}</select></label>
+        <label className="settings-option"><span><strong>启动默认页面</strong><small>下次打开应用时生效。</small></span><select aria-label="启动默认页面" value={resolveStartupView(prefs)} disabled={busy} onChange={event => preference({ startupView: event.target.value as UserPreferences['startupView'] })}>{startupViews.filter(view => prefs.inboxVisible || view.value !== 'inbox').map(view => <option key={view.value} value={view.value}>{view.label}</option>)}</select></label>
         <label className="settings-option settings-option-stack"><span><strong>关闭主窗口时</strong><small>后台运行时可点击系统托盘图标重新打开。</small></span><select aria-label="关闭主窗口时" value={prefs.closeAction} disabled={busy} onChange={event => preference({ closeAction: event.target.value as UserPreferences['closeAction'] })}><option value="auto">有便签、计时或日历同步时留在后台</option><option value="background">始终留在后台</option><option value="quit">退出 GTodo</option></select></label>
         <Toggle label="启动时恢复便签" description="恢复上次未收起的便签；关闭此项不会删除内容。" checked={prefs.restoreNotes} disabled={busy} change={restoreNotes => preference({ restoreNotes })} />
         <Toggle label="启动时恢复番茄钟窗口" description="恢复上次打开的窗口，计时仍需手动继续。" checked={prefs.restorePomodoro} disabled={busy} change={restorePomodoro => preference({ restorePomodoro })} />
@@ -84,15 +85,17 @@ export default function Settings({ state, api, pomodoro, close, update, toast }:
       <GitSettings state={state} api={api} active={category === 3} update={update} />
       <div className="settings-divider" />
       <div className="backup-row"><div><h3 className="section-label">回收站</h3><p>恢复已删除的记录，或永久清理文件。</p></div><button className="button secondary" disabled={busy} onClick={() => setTrashOpen(true)}><Trash2 size={16} />打开回收站</button></div>
+      {!prefs.inboxVisible && !prefs.inboxPurged && <div className="settings-option" aria-label="已删除的任务清单"><span><strong>已删除的“任务”清单</strong><small>原有任务仍在“全部任务”中。此清单入口仅保存在本机。</small></span><div className="button-row"><button className="button secondary" disabled={busy} onClick={() => preference({ inboxVisible: true })}><RotateCcw size={15} />还原清单</button><button className="button secondary danger-text" disabled={busy} onClick={() => setPurgeInbox(true)}><Trash2 size={15} />永久删除清单</button></div></div>}
       <div className="settings-divider" />
       <OutlookCalendarSettings state={state} api={api} busy={busy} execute={execute} update={update} />
       <div className="settings-divider" />
-      <div className="backup-row"><div><h3 className="section-label">数据备份</h3><p>JSON 格式，导入时合并数据。</p></div><div className="button-row"><button className="button secondary" disabled={busy} onClick={() => void execute(async () => { if (await api.exportBackup()) toast('备份已导出'); })}><Download size={16} />导出</button><button className="button secondary" disabled={busy} onClick={() => void execute(async () => update(await api.importBackup()))}><Upload size={16} />导入</button></div></div>
+      <div className="backup-row"><div><h3 className="section-label">数据备份</h3><p>ZIP 包含正文、图片和历史版本，也支持原有 JSON 备份。导入时合并数据。</p><p>本机自动保留最近 24 份小时备份和 7 份每日备份。</p></div><div className="button-row"><button className="button secondary" disabled={busy} onClick={() => void execute(async () => { if (await api.exportBackup()) toast('备份已导出'); })}><Download size={16} />导出</button><button className="button secondary" disabled={busy} onClick={() => void execute(async () => update(await api.importBackup()))}><Upload size={16} />导入</button></div></div>
       </section>
       <div className="settings-footer"><div className="settings-about"><span>GTodo v{state.version}</span><span className="settings-contact">作者邮箱：xlnum73@outlook.com</span></div><button className="text-button app-quit-button" disabled={working} title="保存内容并关闭所有 GTodo 窗口" onClick={() => api.quit()}>退出 GTodo</button></div>
       <p className="settings-footnote">“退出 GTodo”会保存内容、暂停计时并关闭所有窗口。</p>
     </div>
     {error && !colorEdit && <div className="inline-error" role="alert"><AlertCircle size={18} /><span>{error}</span></div>}
+    {purgeInbox && <Modal title="永久删除“任务”清单" close={() => setPurgeInbox(false)} busy={busy}><div className="list-form"><p className="setting-description">永久删除后，将清除这个清单的还原入口，无法撤销。里面的任务和备注仍保留在“全部任务”中。</p>{error && <p className="error-text" role="alert">{error}</p>}<div className="form-footer"><button autoFocus className="button secondary" disabled={busy} onClick={() => setPurgeInbox(false)}>取消</button><button className="button danger-button" disabled={busy} onClick={() => void execute(async () => { update(await api.setPreferences({ inboxPurged: true })); setPurgeInbox(false); toast('清单已永久删除，任务已保留'); })}>确认永久删除</button></div></div></Modal>}
     {colorEdit && <Modal title={colorEdit.label} close={() => { setColorEdit(null); setError(''); }} busy={busy}>
       <form className="board-form" onSubmit={event => { event.preventDefault(); void execute(async () => { update(await api.setPreferences({ [colorEdit.key]: colorEdit.value })); setColorEdit(null); }); }}>
         <label>选择颜色<input type="color" aria-label="自定义默认颜色" autoFocus value={colorEdit.value} disabled={busy} onChange={event => setColorEdit({ ...colorEdit, value: event.target.value })} /></label>

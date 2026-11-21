@@ -57,13 +57,19 @@ export type Task = RecordItem<TaskValues>;
 export type TaskList = RecordItem<ListValues>;
 export type Step = RecordItem<StepValues>;
 
+export const documentRevisionSchema = z.object({
+  id: z.string().min(1).max(1024), kind: z.enum(['task', 'note']), targetId: id, clock: clockSchema,
+  parents: z.array(z.string().max(1024)).max(2000), content: z.string().max(100000), assets: assetMapSchema,
+});
+export type DocumentRevision = z.infer<typeof documentRevisionSchema>;
+
 function recordSchema<T extends z.ZodRawShape>(values: z.ZodObject<T>) {
   const shape = Object.fromEntries(Object.keys(values.shape).map(key => [key,
     ['notesFormat', 'notesAssets', 'format', 'assets', 'noteLink', 'desktop', 'notebook', 'folderId', 'size'].includes(key) ? clockSchema.default({ tick: 0, device: 'legacy' }) : clockSchema]));
   return z.object({ id, values, clocks: z.object(shape) });
 }
 export const workspaceSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   lists: z.array(recordSchema(listValuesSchema)).max(5000),
   tasks: z.array(recordSchema(taskValuesSchema)).max(100000),
   steps: z.array(recordSchema(stepValuesSchema)).max(200000),
@@ -76,17 +82,23 @@ export const workspaceSchema = z.object({
   boards: z.array(recordSchema(boardValuesSchema)).max(1).default([]),
   boardCards: z.array(recordSchema(boardCardValuesSchema)).max(5000).default([]),
   purged: z.array(purgedRecordSchema).max(400000).default([]),
+  documentRevisions: z.array(documentRevisionSchema).max(400000).default([]),
 }).superRefine((value, ctx) => {
-  for (const key of ['lists', 'tasks', 'steps', 'notes', 'noteFolders', 'boards', 'boardCards'] as const) {
+  for (const key of ['lists', 'tasks', 'steps', 'notes', 'noteFolders', 'boards', 'boardCards', 'documentRevisions'] as const) {
     if (new Set(value[key].map(item => item.id)).size !== value[key].length) {
       ctx.addIssue({ code: 'custom', message: `${key} 中有重复标识` });
     }
   }
   if (value.boards.some(item => item.id !== 'main')) ctx.addIssue({ code: 'custom', message: '看板标识无效' });
 });
-export interface Workspace { schemaVersion: 1; lists: TaskList[]; tasks: Task[]; steps: Step[]; notes: Note[]; noteFolders: NoteFolder[]; boards: Board[]; boardCards: BoardCard[]; purged: PurgedRecord[] }
-export function parseWorkspace(value: unknown): Workspace { return workspaceSchema.parse(value) as Workspace; }
-export function emptyWorkspace(): Workspace { return { schemaVersion: 1, lists: [], tasks: [], steps: [], notes: [], noteFolders: [], boards: [], boardCards: [], purged: [] }; }
+export interface Workspace { schemaVersion: 2; lists: TaskList[]; tasks: Task[]; steps: Step[]; notes: Note[]; noteFolders: NoteFolder[]; boards: Board[]; boardCards: BoardCard[]; purged: PurgedRecord[]; documentRevisions: DocumentRevision[] }
+export function parseWorkspace(value: unknown): Workspace {
+  const version = (value as { schemaVersion?: unknown } | null)?.schemaVersion;
+  if (typeof version === 'number' && version > 2) throw new Error('数据由较新版本创建，请升级 GTodo 后再打开。');
+  const migrated = version === 1 ? { ...(value as object), schemaVersion: 2, documentRevisions: [] } : value;
+  return workspaceSchema.parse(migrated) as Workspace;
+}
+export function emptyWorkspace(): Workspace { return { schemaVersion: 2, lists: [], tasks: [], steps: [], notes: [], noteFolders: [], boards: [], boardCards: [], purged: [], documentRevisions: [] }; }
 export function localDate(value = new Date()): string {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 }
@@ -141,6 +153,8 @@ export function nextZoom(current: number, action: ZoomAction): number {
   return zoomSteps.includes(action as typeof zoomSteps[number]) ? action : current;
 }
 export interface DesktopAPI {
+  getDocumentHistory(target: DocumentTarget): Promise<ReturnType<typeof import('./document-history').documentHistory>>;
+  restoreDocumentVersion(target: DocumentTarget, versionId: string): Promise<AppState>;
   getGitStatus(): Promise<import('./git').GitStatus>;
   configureGit(input: import('./git').GitConfigure): Promise<import('./git').GitStatus>;
   gitAction(input: import('./git').GitAction): Promise<import('./git').GitStatus>;

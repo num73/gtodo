@@ -7,7 +7,7 @@ import { NoteDraft } from '../src/notes/draft';
 import { DataStore } from '../electron/storage';
 import { PreferencesStore } from '../electron/preferences';
 import { FolderStorage } from '../electron/folder-storage';
-import { temporaryDirectory } from './helpers';
+import { temporaryDirectory, readFolderSnapshot } from './helpers';
 
 const values = (): NoteValues => ({ title: '便签', content: '', color: 'yellow', format: 'markdown', assets: {}, createdAt: new Date().toISOString(), deleted: false, desktop: 'visible', notebook: 'none', folderId: null });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
@@ -46,7 +46,7 @@ test('notes are in folder snapshots and backups, while window placement remains 
   const id = local.engine.state.notes[0].id;
   await preferences.update(value => { value.noteWindows[id] = { open: true, pinned: true, bounds: { x: 40, y: 80, width: 320, height: 360 } }; });
   const snapshot = JSON.parse(await readFile(folder.ownFile, 'utf8'));
-  assert.equal(parseWorkspace(snapshot).notes[0].values.content, '下午整理资料');
+  assert.equal((await readFolderSnapshot(folder.ownFile)).notes[0].values.content, '下午整理资料');
   assert.equal('noteWindows' in snapshot, false);
   const newPreferences = new PreferencesStore(directory); await newPreferences.initialize();
   assert.deepEqual(newPreferences.value.noteWindows[id], preferences.value.noteWindows[id]);

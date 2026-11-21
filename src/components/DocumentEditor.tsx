@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
-import { Camera, Code, Eye, FolderOpen, ImagePlus, Pencil, FileCode2, Type, Search, Maximize2, Minimize2, Table2, Link2 } from 'lucide-react';
+import { Camera, Code, Eye, FolderOpen, ImagePlus, Pencil, FileCode2, Type, Search, Maximize2, Minimize2, Table2, Link2, History } from 'lucide-react';
 import { MAX_IMAGE_BYTES, type AssetMap, type DocumentTarget } from '../shared/documents';
 import { isComposing } from './keyboard';
 import { registerMainDraft } from '../notes/draft';
@@ -9,6 +9,7 @@ import Modal from './Modal';
 import { markdownEdit, markdownFormats, type MarkdownFormat } from './markdown-actions';
 
 type EditingMode = 'live' | 'source';
+const DocumentHistory = lazy(() => import('./DocumentHistory'));
 const modeKey = 'gtodo-markdown-editing-mode';
 function preferredMode(): EditingMode { try { return window.localStorage.getItem(modeKey) === 'source' ? 'source' : 'live'; } catch { return 'live'; } }
 export default function DocumentEditor({ target, label, value, assets, onChange, onSave, disabled = false, sticky = false, toolbarTarget, collapsedToolbar = false, onToolbarAction }: {
@@ -21,6 +22,7 @@ export default function DocumentEditor({ target, label, value, assets, onChange,
   const selection = useRef({ start: value.length, end: value.length });
   const [mode, setMode] = useState<EditingMode>(preferredMode);
   const [preview, setPreview] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [expanded, setExpanded] = useState(false), [formatsOpen, setFormatsOpen] = useState(false), [linkURL, setLinkURL] = useState('https://');
   const [searchRequested, setSearchRequested] = useState(false);
   const [Live, setLive] = useState<typeof import('./LiveMarkdownEditor').default | null>(null);
@@ -102,6 +104,7 @@ export default function DocumentEditor({ target, label, value, assets, onChange,
   }
   const toolbar = <div className="document-toolbar">
     <span className="document-format-label">Markdown</span>
+    <button type="button" aria-label="正文历史版本" title="查看和还原正文历史版本" disabled={disabled || busy} onClick={() => void execute(async () => { await onSave(); setHistoryOpen(true); }, true)}><History size={15} /><span>历史</span></button>
     <button type="button" aria-label={`设置${label}格式`} title="标题、强调、列表、链接与表格" disabled={disabled || busy} onMouseDown={event => event.preventDefault()} onClick={() => { remember(); setFormatsOpen(true); }}><Type size={15} /><span>格式</span></button>
     <button type="button" aria-label={`${mode === 'live' ? '源码编辑' : '实时编辑'}${label}`} title={mode === 'live' ? '查看和编辑 Markdown 源码' : '在排版中实时编辑'} aria-pressed={mode === 'source'} disabled={busy} onMouseDown={event => event.preventDefault()} onClick={() => {
       remember(); const next = mode === 'live' ? 'source' : 'live'; focusRequested.current = true; setMode(next); setPreview(false);
@@ -154,6 +157,7 @@ export default function DocumentEditor({ target, label, value, assets, onChange,
       onDrop={event => { const files = Array.from(event.dataTransfer.files); if (files.length) { event.preventDefault(); if (!busy) { remember(); void execute(() => importFiles(files)); } } }} />
     {preview && Preview && <Preview value={value} label={label} target={target} assets={assets} openLink={openLink} />}
     {error && <div className="document-error" role="alert">{error}</div>}
+    {historyOpen && <Suspense fallback={null}><DocumentHistory target={target} close={() => setHistoryOpen(false)} /></Suspense>}
     {formatsOpen && <Modal title="Markdown 格式" close={() => setFormatsOpen(false)} busy={busy}>
       <div className="markdown-format-grid">{markdownFormats.map(item => <button type="button" key={item.id} className="button secondary" disabled={busy} onClick={() => format(item.id)}>{item.label}</button>)}
         <button className="button secondary" disabled={busy} onClick={() => void execute(async () => { insert('\n| 标题一 | 标题二 |\n| --- | --- |\n| 内容 | 内容 |\n'); setFormatsOpen(false); await onSave(); }, true)}><Table2 size={15} />插入表格</button>

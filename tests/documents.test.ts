@@ -9,7 +9,7 @@ import { DocumentFiles, referencedImages } from '../electron/document-files';
 import { commandSchema, parseWorkspace } from '../src/shared/model';
 import { assetURL, assetMapSchema, documentParts, documentFileName, normalizeAssetPath, type DocumentTarget } from '../src/shared/documents';
 import { FieldDraft, flushMainDrafts, registerMainDraft } from '../src/notes/draft';
-import { temporaryDirectory } from './helpers';
+import { temporaryDirectory, transferSnapshot } from './helpers';
 import { linkedNoteForTask, linkedTaskForNote } from '../src/shared/note-links';
 
 async function device(t: TestContext) {
@@ -131,9 +131,9 @@ test('external images use relative assets paths and changes are detected without
 
 test('a remote snapshot can update a document without turning stale materialized files into a newer edit', async t => {
   const first = await device(t); const second = await device(t);
-  await copyFile(first.folder.ownFile, path.join(second.folder.directory, path.basename(first.folder.ownFile))); await second.folder.refresh();
+  await transferSnapshot(first.folder.ownFile, second.folder.directory); await second.folder.refresh();
   await first.folder.update(engine => engine.apply({ type: 'note.update', id: first.note.id, patch: { content: '远端新内容' } }));
-  await copyFile(first.folder.ownFile, path.join(second.folder.directory, path.basename(first.folder.ownFile))); await second.folder.refresh();
+  await transferSnapshot(first.folder.ownFile, second.folder.directory); await second.folder.refresh();
   const local = second.store.engine.state.notes.find(item => item.id === first.note.id)!;
   assert.equal(local.values.content, '远端新内容');
   assert.deepEqual(local.clocks.content, first.store.engine.state.notes[0].clocks.content);
