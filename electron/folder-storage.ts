@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parseWorkspace, type FolderStatus, type Workspace } from '../src/shared/model';
@@ -13,6 +13,7 @@ import type { BoardImageInput } from '../src/shared/board';
 import { collectPurgedSharedRecords, SnapshotFiles } from './snapshot-files';
 import { FileReadCache, safePath } from './file-io';
 import { withBackupArchive, writeBackupArchive } from './backup-archive';
+import { collectRecordGarbage, recordReferences, retainedDirectoryWorkspaces, withRecordWrite } from './record-gc';
 
 export const MAX_DATA_BYTES = 24 * 1024 * 1024;
 // Include conflict copies produced by desktop sync clients, but never temp/backup files.
@@ -26,14 +27,16 @@ export class FolderStorage {
   private decoded = new Map<string, { bytes: Buffer; workspace: Workspace }>();
   private mergedInputs = new WeakSet<Workspace>();
   private published = new Map<string, { workspace: Workspace; content: string }>();
-  constructor(readonly local: DataStore, readonly preferences: PreferencesStore, private changed: () => void = () => {}, readonly documents = new DocumentFiles(local.directory)) {}
+  private nextCollection = 0;
+  constructor(public local: DataStore, readonly preferences: PreferencesStore, private changed: () => void = () => {}, public documents = FolderStorage.documentsFor(local)) {}
+  static documentsFor(local: DataStore) { return new DocumentFiles(local.directory, local.scoped ? { assetRoot: local.dataRoot, assertAvailable: () => local.assertAvailable() } : {}); }
   get directory() { return this.preferences.value.dataPath; }
   get ownFile() { return path.join(this.directory, `device-${this.local.engine.deviceId}.json`); }
   private enqueue<T>(action: () => Promise<T>): Promise<T> {
     const next = this.queue.then(action); this.queue = next.catch(() => {}); return next;
   }
   async initialize() {
-    if (this.directory === path.join(this.preferences.directory, 'data')) await mkdir(this.directory, { recursive: true });
+    if (!this.local.scoped && this.directory === path.join(this.preferences.directory, 'data')) await mkdir(this.directory, { recursive: true });
     await this.refresh();
   }
   private async readDirectory(directory: string): Promise<{ workspaces: Workspace[]; contents: Map<string, string> }> {
@@ -58,13 +61,14 @@ export class FolderStorage {
   }
   private async encode(workspace: Workspace, directory = this.directory) {
     const content = JSON.stringify(await this.snapshots.encode(workspace, directory));
-    if (Buffer.byteLength(content) > MAX_DATA_BYTES) throw new Error('待办数据超过 24 MB，仍保存在本机，暂未写入数据文件夹。');
+    if (Buffer.byteLength(content) > MAX_DATA_BYTES) throw new Error('设备索引超过 24 MB，已暂停发布同步索引，请先导出备份并整理记录。');
     return content;
   }
   private async reconcile(scanDocuments = true, forceNotify = false) {
     const previous = this.status;
     let modified = false;
     try {
+      await this.local.assertAvailable();
       const { workspaces, contents } = await this.readDirectory(this.directory);
       let merged = this.local.engine;
       const writable = () => { if (merged === this.local.engine) merged = new WorkspaceEngine(this.local.engine.deviceId, this.local.engine.state); return merged; };
@@ -82,17 +86,22 @@ export class FolderStorage {
         if (contents.get(path.basename(this.ownFile)) !== content) {
           const previous = contents.get(path.basename(this.ownFile));
           if (previous && !JSON.parse(previous).format) await atomicWrite(`${this.ownFile}.v1.bak`, previous);
-          await atomicWrite(this.ownFile, content); this.fileCache.invalidate(this.ownFile);
+          await withRecordWrite(this.directory, this.local.engine.deviceId, () => atomicWrite(this.ownFile, content)); this.fileCache.invalidate(this.ownFile);
         }
         this.published.set(this.ownFile, { workspace: this.local.engine.state, content });
         await this.documents.writeDocuments(this.directory, this.local.engine.state, scan!);
       }
       this.status = { error: null, lastRead: new Date().toISOString(), notice: this.documents.notice };
+      if (Date.now() >= this.nextCollection) {
+        this.nextCollection = Date.now() + 60 * 60 * 1000;
+        try { await collectRecordGarbage(this.directory, this.local.engine.deviceId); }
+        catch { this.status.notice = '数据已保存，过期数据块暂未清理，将稍后重试。'; }
+      }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       this.status = { ...this.status, error: code === 'ENOENT' || code === 'ENOTDIR'
-        ? '数据文件夹暂时不可用，任务已保存在此设备。恢复文件夹或重新选择路径后会继续写入。'
-        : code === 'EACCES' || code === 'EPERM' ? '数据文件夹不可读写，请检查权限。任务仍保存在此设备。'
+        ? '数据文件夹暂时不可用，请恢复原目录或重新选择目录。'
+        : code === 'EACCES' || code === 'EPERM' ? '数据文件夹不可读写，请检查权限。未保存的编辑仍保留在窗口中。'
         : error instanceof Error ? error.message : '无法读取数据文件夹，请重试。' };
     }
     if (forceNotify || modified || previous.error !== this.status.error || previous.notice !== this.status.notice) this.changed();
@@ -109,26 +118,37 @@ export class FolderStorage {
   update(change: (engine: WorkspaceEngine) => void) {
     return this.enqueue(async () => {
       await this.reconcile();
-      await this.local.update(change); // Always commit locally even when the chosen drive is unavailable.
+      await this.local.update(change);
       await this.reconcile(true, true);
     });
   }
-  changeDirectory(directory: string) {
+  changeDirectory(directory: string, beforeActivate?: () => Promise<void>) {
     return this.enqueue(async () => {
       await this.reconcile();
       if (!path.isAbsolute(directory)) throw new Error('请选择完整的本地文件夹路径。');
       const destination = await stat(directory);
       if (!destination.isDirectory()) throw new Error('请选择文件夹。');
-      if (path.resolve(directory) === path.resolve(this.directory)) { await this.reconcile(); return; }
+      const relative = path.relative(await realpath(this.preferences.directory), await realpath(directory));
+      if (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) throw new Error('请选择应用配置目录以外的数据文件夹。');
+      if (path.resolve(directory) === path.resolve(this.directory)) {
+        try { await this.local.assertAvailable(); await this.reconcile(); return; } catch { /* Explicitly reopening a replaced directory starts a new workspace. */ }
+      }
       const { workspaces } = await this.readDirectory(directory);
-      const merged = new WorkspaceEngine(this.local.engine.deviceId, this.local.engine.state);
+      const local = await DataStore.open(directory, this.local.engine.deviceId);
+      const windows = await this.preferences.readWorkspaceWindows(local.directory);
+      const documents = FolderStorage.documentsFor(local);
+      const merged = new WorkspaceEngine(local.engine.deviceId, local.engine.state);
       for (const value of workspaces) merged.merge(value);
-      const scan = await this.documents.readChanges(directory, merged, [this.local.engine.state, ...workspaces]);
-      const content = await this.encode(merged.state, directory);
-      await atomicWrite(path.join(directory, `device-${this.local.engine.deviceId}.json`), content);
-      await this.documents.writeDocuments(directory, merged.state, scan);
-      await this.local.update(engine => engine.merge(merged.state));
+      const scan = await documents.readChanges(directory, merged, [local.engine.state, ...workspaces]);
+      await local.update(engine => engine.merge(merged.state));
+      const content = await this.encode(local.engine.state, directory);
+      await withRecordWrite(directory, local.engine.deviceId, () => atomicWrite(path.join(directory, `device-${local.engine.deviceId}.json`), content));
+      await documents.writeDocuments(directory, local.engine.state, scan);
+      await beforeActivate?.();
       await this.preferences.update(value => { value.dataPath = directory; value.git.enabled = false; });
+      await this.preferences.attachWorkspace(local.directory, windows);
+      this.local = local; this.documents = documents; this.nextCollection = 0;
+      this.fileCache.invalidate(); this.snapshots.cache.invalidate(); this.decoded.clear(); this.published.clear(); this.mergedInputs = new WeakSet();
       this.status = { error: null, lastRead: new Date().toISOString() }; this.changed();
     });
   }
@@ -159,7 +179,9 @@ export class FolderStorage {
       await this.reconcile();
       try {
         if (this.status.error) throw new Error(this.status.error);
-        return await inspectTrash(this.directory, this.local.directory, this.local.engine.state, await this.retainedWorkspaces());
+        const snapshot = await inspectTrash(this.directory, this.local.directory, this.local.engine.state, await this.retainedWorkspaces());
+        const records = await collectRecordGarbage(this.directory, this.local.engine.deviceId, { remove: false });
+        snapshot.residualBytes += records.eligibleBytes; snapshot.residualFiles += records.eligibleFiles; return snapshot;
       } catch (error) {
         return { items: trashRecords(this.local.engine.state), residualBytes: 0, residualFiles: 0, error: error instanceof Error ? error.message : '无法统计文件占用。' };
       }
@@ -170,7 +192,7 @@ export class FolderStorage {
   }
   private async retainedWorkspaces() {
     const remote = await this.readDirectory(this.directory);
-    return [...await this.local.backupWorkspaces(), ...remote.workspaces];
+    return [...await this.local.backupWorkspaces(), ...await retainedDirectoryWorkspaces(this.directory), ...remote.workspaces];
   }
   private async scrubMigrationBackup() {
     const file = await safePath(this.directory, [`${path.basename(this.ownFile)}.v1.bak`]);
@@ -192,7 +214,8 @@ export class FolderStorage {
         await this.scrubMigrationBackup();
         const result = await cleanTrashFiles(this.directory, this.local.directory, this.local.engine.state, await this.retainedWorkspaces());
         result.freedBytes += await this.local.collectRecords();
-        result.freedBytes += await collectPurgedSharedRecords(this.directory, this.local.engine.state);
+        result.freedBytes += await collectPurgedSharedRecords(this.directory, this.local.engine.state, (await recordReferences(this.directory)).used);
+        result.freedBytes += (await collectRecordGarbage(this.directory, this.local.engine.deviceId)).freedBytes;
         await this.documents.forgetPurged(this.directory, this.local.engine.state);
         return result;
       }

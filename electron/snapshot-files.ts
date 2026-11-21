@@ -68,8 +68,8 @@ export class SnapshotFiles {
 
 // Only purge obsolete blocks for permanently deleted records. Other devices may
 // be uploading new, not-yet-referenced blocks, so a general orphan sweep is unsafe.
-export async function collectPurgedSharedRecords(root: string, workspace: Workspace) {
-  const used = new Set<string>();
+export async function collectPurgedSharedRecords(root: string, workspace: Workspace, protectedHashes: Iterable<string> = []) {
+  const used = new Set<string>(protectedHashes);
   for (const name of await readdir(root)) if (/^device-[^\\/]+\.json$/i.test(name)) {
     const value: unknown = JSON.parse(await readFile(await safePath(root, [name]), 'utf8'));
     if (isRecordManifest(value)) for (const values of Object.values(snapshotManifestSchema.parse(value).records)) for (const hash of values) used.add(hash);

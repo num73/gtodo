@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, session } from 'electron';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
@@ -20,6 +20,8 @@ void (async () => {
   main.setTitle('GTodo — 保存与备份测试（独立数据）');
   const evaluate = (code: string) => main.webContents.executeJavaScript(code);
   await until(() => evaluate('!!document.querySelector(".composer")'), 'main UI');
+  assert.equal(app.commandLine.hasSwitch('disable-http-cache'), true);
+  assert.equal(await session.defaultSession.getCacheSize(), 0, 'rendered content must not leave an HTTP cache in AppData');
   await evaluate(`window.gtodo.command({type:'task.add',title:'原任务名称',listId:'inbox',myDay:new Date().toLocaleDateString('sv-SE')})`);
   await until(() => evaluate('!!document.querySelector(".task-body")'), 'created task');
   await evaluate(`document.querySelector('.task-body').click()`);
@@ -55,11 +57,17 @@ void (async () => {
   }
   await evaluate(changeTextarea('任务名称', '切换目录前的最后一个字'));
   assert.equal((await attempt('chooseDataFolder')).ok, true);
-  const state = await evaluate('window.gtodo.getState()');
-  assert.equal(state.dataPath, destination); assert.equal(state.workspace.tasks[0].values.title, '切换目录前的最后一个字');
-  const snapshot = await new SnapshotFiles().decode(JSON.parse(await readFile(path.join(destination, `device-${state.deviceId}.json`), 'utf8')), destination);
+  let state = await evaluate('window.gtodo.getState()');
+  assert.equal(state.dataPath, destination); assert.equal(state.workspace.tasks.length, 0); assert.equal(state.workspace.notes.length, 0);
+  assert.equal(note.isDestroyed(), true, 'old sticky windows cannot keep editing another directory');
+  const snapshot = await new SnapshotFiles().decode(JSON.parse(await readFile(path.join(originalPath, `device-${state.deviceId}.json`), 'utf8')), originalPath);
   assert.equal(snapshot.tasks[0].values.title, '切换目录前的最后一个字');
   assert.equal(snapshot.notes[0].values.content, '便签尚未自动保存的最后一个字');
+  assert.equal((await attempt('importBackup')).ok, true);
+  state = await evaluate('window.gtodo.getState()');
+  await until(() => evaluate('!!document.querySelector(".task-body")'), 'imported task');
+  await evaluate(`document.querySelector('.task-body').click()`);
+  await until(() => evaluate('!!document.querySelector("textarea[aria-label=备注]")'), 'imported task editor');
   const taskId = state.workspace.tasks[0].id;
   for (const body of ['历史第一稿', '历史第二稿']) await evaluate(`window.gtodo.command({type:'task.update',id:${JSON.stringify(taskId)},patch:{notes:${JSON.stringify(body)}}})`);
   await until(() => evaluate('document.querySelector("textarea[aria-label=备注]").value === "历史第二稿"'), 'history draft refresh');
@@ -72,7 +80,7 @@ void (async () => {
   const zipFile = path.join(__dirname, 'backup.zip');
   dialog.showSaveDialog = (async () => ({ canceled: false, filePath: zipFile })) as typeof dialog.showSaveDialog;
   assert.equal((await attempt('exportBackup')).ok, true);
-  await withBackupArchive(zipFile, process.env.GTODO_DATA_DIR!, async workspace => {
+  await withBackupArchive(zipFile, path.join(destination, '.gtodo'), async workspace => {
     assert.equal(workspace.tasks[0].values.notes, '历史第一稿');
     assert.ok(workspace.documentRevisions.some(item => item.content === '历史第二稿'));
   });

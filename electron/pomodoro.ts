@@ -14,7 +14,7 @@ interface Options {
 }
 // The main process owns the clock. No renderer ticks or cloud-folder writes are needed.
 export class PomodoroTimer {
-  readonly file: string;
+  file: string;
   private data = emptyPomodoroData();
   private queue: Promise<unknown> = Promise.resolve();
   private error: string | null = null;
@@ -41,6 +41,11 @@ export class PomodoroTimer {
     }
     this.unavailable = true;
     this.error = `番茄钟数据无法读取或保存，请保留 ${this.file} 及备份，检查后重启应用。`;
+  }
+  async changeDirectory(directory: string) {
+    await this.queue;
+    this.file = path.join(directory, 'pomodoro.json'); this.data = emptyPomodoroData(); this.unavailable = false; this.error = null;
+    await this.initialize(); this.publish();
   }
   snapshot(): PomodoroSnapshot {
     const date = localDate(new Date(this.now()));

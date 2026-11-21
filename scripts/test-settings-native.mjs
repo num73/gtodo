@@ -20,7 +20,8 @@ for (const phase of ['seed', 'quiet', 'restore']) {
     if (code !== 0 || !result.passed) throw new Error(result.error || `${phase} exited with ${code}`);
   } finally { clearTimeout(timeout); }
 }
-const timer = JSON.parse(await readFile(path.join(env.GTODO_DATA_DIR, 'pomodoro.json'), 'utf8'));
+const preferences = JSON.parse(await readFile(path.join(env.GTODO_DATA_DIR, 'preferences.json'), 'utf8'));
+const timer = JSON.parse(await readFile(path.join(preferences.dataPath, '.gtodo', 'devices', preferences.deviceId, 'pomodoro.json'), 'utf8'));
 if (timer.session.status !== 'paused') throw new Error('Closing in quit mode must pause the active timer');
 const saved = await readTestWorkspace(env.GTODO_DATA_DIR);
 if (saved.notes[0].values.content !== '退出时的最后输入') throw new Error('Closing in quit mode must save the final note draft');

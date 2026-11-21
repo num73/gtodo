@@ -10,7 +10,7 @@ export async function atomicWrite(file: string, content: string | Uint8Array) {
     await rename(temporary, file);
   } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
 }
-export async function safePath(root: string, parts: string[], create = false) {
+export async function safePath(root: string, parts: string[], create = false, allowDirectory = false) {
   let current = await realpath(root);
   for (let index = 0; index < parts.length; index++) {
     const part = parts[index];
@@ -24,7 +24,7 @@ export async function safePath(root: string, parts: string[], create = false) {
       else if (index < parts.length - 1) throw error;
     }
     if (info?.isSymbolicLink()) throw new Error('数据路径不能是符号链接或目录联接。');
-    if (info && (index < parts.length - 1 ? !info.isDirectory() : !info.isFile())) throw new Error('数据路径被其他文件占用。');
+    if (info && (index < parts.length - 1 ? !info.isDirectory() : !info.isFile() && !(allowDirectory && info.isDirectory()))) throw new Error('数据路径被其他文件占用。');
   }
   return current;
 }

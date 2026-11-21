@@ -113,6 +113,63 @@ async function mount(initialPaneLayout: PaneLayout = defaultPaneLayout, initialP
   return { engine, api, user, add, timer, setMainWindow: (value: typeof mainWindow) => { mainWindow = value; publish(); } };
 }
 
+test('notebook context menu renames, moves, deletes only its target and restores via undo', async () => {
+  const { user, api, engine } = await mount(defaultPaneLayout, { startupView: 'notebook' });
+  await act(async () => { await api.command({ type: 'notebook.add', title: '右键目标' }); await api.command({ type: 'notebook.add', title: '保留的笔记' }); await api.command({ type: 'noteFolder.add', name: '归档', parentId: null }); });
+  const target = engine.state.notes.find(note => note.values.title === '右键目标')!, other = engine.state.notes.find(note => note.values.title === '保留的笔记')!;
+  await user.click(screen.getByRole('button', { name: /保留的笔记/ }));
+  fireEvent.change(screen.getByRole('textbox', { name: '笔记内容' }), { target: { value: '未离开编辑器的草稿' } });
+  fireEvent.contextMenu(screen.getByRole('button', { name: /右键目标/ }), { clientX: 60, clientY: 100 });
+  await user.click(screen.getByRole('menuitem', { name: '重命名' }));
+  assert.equal(engine.state.notes.find(note => note.id === other.id)!.values.content, '未离开编辑器的草稿');
+  await user.clear(screen.getByRole('textbox', { name: '笔记名称' })); await user.type(screen.getByRole('textbox', { name: '笔记名称' }), '改名后的笔记');
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '保存' }));
+  await waitFor(() => assert.equal(engine.state.notes.find(note => note.id === target.id)!.values.title, '改名后的笔记'));
+  fireEvent.contextMenu(screen.getByRole('button', { name: /改名后的笔记/ })); await user.click(screen.getByRole('menuitem', { name: '移动到目录' }));
+  await user.selectOptions(screen.getByRole('combobox', { name: '目标目录' }), engine.state.noteFolders[0].id);
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '保存' }));
+  await waitFor(() => assert.equal(engine.state.notes.find(note => note.id === target.id)!.values.folderId, engine.state.noteFolders[0].id));
+  const row = await screen.findByRole('button', { name: /改名后的笔记/ }); row.focus(); fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
+  assert.ok(screen.getByRole('menu', { name: '笔记操作' })); fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' }); assert.equal(document.activeElement, row);
+  fireEvent.contextMenu(row); await user.click(screen.getByRole('menuitem', { name: '删除笔记' }));
+  assert.equal(engine.state.notes.find(note => note.id === target.id)!.values.deleted, false);
+  assert.ok(within(screen.getByRole('dialog')).getByText('改名后的笔记'));
+  assert.ok(within(screen.getByRole('dialog')).getByText(/设置 → 数据与同步 → 回收站/));
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除笔记' }));
+  await waitFor(() => assert.equal(engine.state.notes.find(note => note.id === target.id)!.values.deleted, true));
+  assert.equal(engine.state.notes.find(note => note.id === other.id)!.values.deleted, false);
+  await user.click(screen.getByRole('button', { name: '撤销' }));
+  await waitFor(() => assert.equal(engine.state.notes.find(note => note.id === target.id)!.values.deleted, false));
+});
+
+test('notebook context deletion preserves a linked sticky note and failed saves leave the confirmation usable', async () => {
+  const { user, api, engine } = await mount(defaultPaneLayout, { startupView: 'notebook' });
+  await act(async () => { await api.command({ type: 'notebook.add', title: '关联内容' }); await api.command({ type: 'note.desktop', id: engine.state.notes[0].id }); });
+  const id = engine.state.notes[0].id, original = api.command;
+  fireEvent.contextMenu(screen.getByRole('button', { name: /关联内容/ })); await user.click(screen.getByRole('menuitem', { name: '删除笔记' }));
+  assert.ok(within(screen.getByRole('dialog')).getByText('关联内容'));
+  assert.ok(screen.getByText(/关联的桌面便签及正文会保留/));
+  api.command = async value => { if (value.type === 'notebook.remove') throw new Error('磁盘无法写入'); return original(value); };
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除笔记' }));
+  await waitFor(() => assert.ok(within(screen.getByRole('dialog')).getByText('磁盘无法写入')));
+  assert.equal(engine.state.notes[0].values.notebook, 'visible');
+  api.command = original;
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除笔记' }));
+  await waitFor(() => assert.equal(engine.state.notes.find(note => note.id === id)!.values.notebook, 'removed'));
+  assert.equal(engine.state.notes[0].values.desktop, 'visible'); assert.equal(engine.state.notes[0].values.deleted, false);
+});
+
+test('folder context deletion confirms and preserves its notes at the root', async () => {
+  const { user, api, engine } = await mount(defaultPaneLayout, { startupView: 'notebook' });
+  await act(async () => { await api.command({ type: 'noteFolder.add', name: '待删目录', parentId: null }); await api.command({ type: 'notebook.add', title: '目录内笔记', folderId: engine.state.noteFolders[0].id }); });
+  fireEvent.contextMenu(screen.getByRole('button', { name: '待删目录' }));
+  await user.click(screen.getByRole('menuitem', { name: '删除目录' }));
+  assert.equal(engine.state.noteFolders[0].values.deleted, false);
+  await user.click(screen.getByRole('button', { name: '确认删除目录' }));
+  await waitFor(() => assert.equal(engine.state.noteFolders[0].values.deleted, true));
+  assert.equal(engine.state.notes[0].values.deleted, false); assert.ok(screen.getByRole('button', { name: /目录内笔记/ }));
+});
+
 test('settings startup preferences persist without navigating away from the current page', async () => {
   const { user, api } = await mount(defaultPaneLayout, { startupView: 'board' });
   assert.ok(screen.getByRole('region', { name: '自由看板' }));

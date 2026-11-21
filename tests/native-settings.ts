@@ -119,7 +119,9 @@ void (async () => {
     assert.equal(state.noteWindows[state.workspace.notes[0].id].open, false);
     assert.equal(state.pomodoroWindow.open, false);
     const saved = JSON.parse(await readFile(path.join(process.env.GTODO_DATA_DIR!, 'preferences.json'), 'utf8'));
-    assert.equal(saved.noteWindows[state.workspace.notes[0].id].open, true, 'saved restoration history remains available');
+    assert.deepEqual(saved.noteWindows, {}, 'profile contains no per-note state');
+    const windows = JSON.parse(await readFile(path.join(state.dataPath, '.gtodo', 'devices', state.deviceId, 'windows.json'), 'utf8'));
+    assert.equal(windows[state.workspace.notes[0].id].open, true, 'restoration history lives with the selected data');
     await evaluate('window.gtodo.setPreferences({restoreNotes:true,restorePomodoro:true,closeAction:"auto"})');
     await result({ passed: true, checks: ['preferences survive restart', 'restoration off preserves content and window history', 'auto close quits with no active windows'] });
     main.close();

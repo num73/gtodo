@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { atomicWrite } from './storage';
+import { safePath } from './file-io';
 import type { FolderStorage } from './folder-storage';
 import type { PreferencesStore } from './preferences';
 import { emptyGitStatus, gitActionSchema, gitConfigureSchema, type GitAction, type GitConfigure, type GitStatus } from '../src/shared/git';
@@ -10,6 +11,11 @@ import { emptyGitStatus, gitActionSchema, gitConfigureSchema, type GitAction, ty
 const runFile = promisify(execFile);
 const sanitize = (value: string) => value.replace(/(https?:\/\/)[^\s/@]+@/gi, '$1***@').slice(0, 4000);
 export class GitSync {
+  private async protectBackupReferences() {
+    const file = await safePath(this.folders.directory, ['.gitignore']);
+    let value = ''; try { value = await readFile(file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (!value.includes('# GTodo shared record references')) await atomicWrite(file, `${value}${value.endsWith('\n') || !value ? '' : '\n'}# GTodo shared record references\n!.gtodo/devices/*/workspace.json.bak\n.gtodo/writes/\n.gtodo/devices/*/record-gc.json\n.gtodo/migration-v2/\n`);
+  }
   constructor(private folders: FolderStorage, private preferences: PreferencesStore, private executable = 'git') {}
   private async run(args: string[], timeout = 60000) {
     const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_MERGE_AUTOEDIT: 'no' };
@@ -67,6 +73,7 @@ export class GitSync {
         if (!ignore.includes('# GTodo local recovery files')) await atomicWrite(ignoreFile, `${ignore}${ignore.endsWith('\n') || !ignore ? '' : '\n'}# GTodo local recovery files\n*.bak\n*.previous\n*.tmp\n`);
       }
       await this.exactRoot();
+      await this.protectBackupReferences();
       if (values.remote !== undefined) {
         const existing = await this.optional(['config', '--get', 'remote.origin.url']);
         if (values.remote) await this.run(['remote', existing ? 'set-url' : 'add', '--', 'origin', values.remote]);
@@ -85,7 +92,7 @@ export class GitSync {
     return this.folders.exclusive(async () => {
       if (!this.preferences.value.git.enabled) throw new Error('请先在设置中启用 Git 同步。');
       await this.exactRoot(); const status = await this.inspect(); if (status.error) throw new Error(status.error);
-      if (action.type === 'add') await this.run(['add', '--all', '--', '.']);
+      if (action.type === 'add') { await this.protectBackupReferences(); await this.run(['add', '--all', '--', '.']); }
       else if (action.type === 'commit') {
         if (!status.files.some(file => file.index !== ' ' && file.index !== '?')) throw new Error('没有暂存的修改，请先执行 Add。');
         if (!status.userName || !status.userEmail) throw new Error('请在 Git 设置中填写提交用户名和邮箱。');

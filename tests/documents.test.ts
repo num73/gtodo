@@ -83,11 +83,14 @@ test('local image imports survive folder relocation, Markdown copies and JSON ba
   const relative = await f.folder.addImage(f.task, image);
   await f.folder.update(engine => engine.apply({ type: 'task.update', id: f.task.id, patch: { notes: `![示例](${relative})` } }));
   assert.deepEqual(await readFile(path.join(path.dirname(f.file(f.task, 'markdown')), relative)), image);
-  const newFolder = path.join(f.root, 'new-folder'); await mkdir(newFolder); await f.folder.changeDirectory(newFolder);
+  const exported = JSON.parse(await f.folder.exportBackup());
+  const newFolder = await temporaryDirectory(t); await f.folder.changeDirectory(newFolder);
+  assert.equal(f.folder.local.engine.state.tasks.length, 0);
+  await f.folder.importBackup(parseWorkspace(exported), exported.attachments);
   assert.deepEqual(await readFile(path.join(path.dirname(f.file(f.task, 'markdown')), relative)), image);
   await f.folder.update(engine => engine.apply({ type: 'note.update', id: f.note.id, patch: { format: 'markdown', content: engine.state.tasks[0].values.notes, assets: engine.state.tasks[0].values.notesAssets } }));
   assert.deepEqual(await readFile(path.join(path.dirname(f.file(f.note, 'markdown')), relative)), image);
-  const backup = JSON.parse(await f.documents.backup(f.store.engine.state));
+  const backup = JSON.parse(await f.folder.exportBackup());
   const second = await device(t); await second.documents.importAttachments(backup.attachments);
   await second.folder.update(engine => engine.merge(parseWorkspace(backup)));
   assert.deepEqual(await readFile(path.join(second.folder.directory, ...documentParts(f.note), relative)), image);

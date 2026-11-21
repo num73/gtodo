@@ -24,6 +24,8 @@ test('real Git initializes only the data repository, stages, commits literal mes
   const remote = path.join(root, 'remote.git'); await mkdir(remote); await git(remote, ['init', '--bare', '--initial-branch=main']);
   const status = await sync.configure({ enabled: true, initialize: true, remote, userName: 'GTodo QA', userEmail: 'qa@example.test' });
   assert.equal(status.repository, true); assert.equal(status.enabled, true);
+  await assert.rejects(git(folders.directory, ['check-ignore', '--no-index', '.gtodo/devices/peer/workspace.json.bak']), { code: 1 });
+  assert.equal((await git(folders.directory, ['check-ignore', '--no-index', '.gtodo/devices/peer/record-gc.json'])).stdout.trim(), '.gtodo/devices/peer/record-gc.json');
   await folders.update(engine => { engine.apply({ type: 'notebook.add', title: 'Git 笔记' }); engine.apply({ type: 'note.update', id: engine.state.notes[0].id, patch: { content: '# 本机版本' } }); });
   await writeFile(path.join(folders.directory, 'recovery.bak'), 'kept locally');
   await sync.action({ type: 'add' }); assert.equal((await sync.status()).files.some(file => file.path.endsWith('.bak')), false);

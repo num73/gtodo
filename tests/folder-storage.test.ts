@@ -84,19 +84,20 @@ test('two folder replicas merge offline edits and deletion without sharing a dev
   assert.deepEqual(a.local.engine.state, b.local.engine.state);
   assert.equal(b.local.engine.state.tasks[0].values.deleted, true);
 });
-test('changing path preserves source files, merges destination tasks and survives restart', async t => {
+test('changing path preserves source files, opens only destination tasks and survives restart', async t => {
   const a = await device(t); const b = await device(t);
   await a.folder.update(engine => engine.apply({ type: 'task.add', title: '来自原目录', listId: 'inbox' }));
   await b.folder.update(engine => engine.apply({ type: 'task.add', title: '来自新目录', listId: 'inbox' }));
   const sourceFile = a.folder.ownFile; const original = await readFile(sourceFile, 'utf8');
   await a.folder.changeDirectory(b.folder.directory);
-  assert.equal(a.local.engine.state.tasks.length, 2);
+  assert.equal(a.folder.local.engine.state.tasks.length, 1);
+  assert.equal(a.folder.local.engine.state.tasks[0].values.title, '来自新目录');
   assert.equal(await readFile(sourceFile, 'utf8'), original);
   assert.equal((await readdir(b.folder.directory)).filter(file => file.endsWith('.json')).length, 2);
   const preferences = new PreferencesStore(a.root); await preferences.initialize();
-  const local = new DataStore(a.root); await local.initialize();
+  const local = await DataStore.open(b.folder.directory, a.local.engine.deviceId);
   const restarted = new FolderStorage(local, preferences); await restarted.initialize();
-  assert.equal(restarted.directory, b.folder.directory); assert.equal(local.engine.state.tasks.length, 2);
+  assert.equal(restarted.directory, b.folder.directory); assert.equal(local.engine.state.tasks.length, 1);
 });
 test('unavailable directory preserves edits in the local cache and resumes after recovery', async t => {
   const a = await device(t); const missing = path.join(a.root, 'not-yet-available');
@@ -134,7 +135,7 @@ test('unchanged refreshes do not rewrite files or generate a cloud sync feedback
   await a.folder.refresh(); await a.folder.refresh();
   assert.equal((await stat(a.folder.ownFile)).mtimeMs, before.mtimeMs);
 });
-test('path changes and task writes are serialized without losing either task', async t => {
+test('path changes serialize edits into their respective directories', async t => {
   const a = await device(t); const destination = await temporaryDirectory(t);
   await Promise.all([
     a.folder.update(engine => engine.apply({ type: 'task.add', title: '切换前', listId: 'inbox' })),
@@ -142,7 +143,9 @@ test('path changes and task writes are serialized without losing either task', a
     a.folder.update(engine => engine.apply({ type: 'task.add', title: '切换后', listId: 'inbox' })),
   ]);
   assert.equal(a.folder.directory, destination);
-  assert.equal((await readFolderSnapshot(a.folder.ownFile)).tasks.length, 2);
+  assert.equal((await readFolderSnapshot(a.folder.ownFile)).tasks.length, 1);
+  assert.equal(a.folder.local.engine.state.tasks[0].values.title, '切换后');
+  assert.equal(a.local.engine.state.tasks[0].values.title, '切换前');
 });
 test('client conflict-copy files are merged while temp files are ignored', async t => {
   const a = await device(t); const peer = new WorkspaceEngine('peer');

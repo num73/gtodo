@@ -28,8 +28,9 @@ void (async () => {
     catch (error) { throw new Error(`${String(error)} in ${code.slice(0, 280)}`); }
   };
   const click = async (label: string) => {
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const query = `[...document.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === ${JSON.stringify(label)} || button.textContent.trim() === ${JSON.stringify(label)})`;
-    await until(() => evaluate(`!!(${query})`), `button: ${label}`);
+    await until(() => evaluate(`(()=>{const button=${query};const dialog=document.querySelector('dialog[open]');return !!button && !button.disabled && (!dialog || dialog.contains(button));})()`), `enabled button: ${label}`);
     await evaluate(`(${query}).click()`);
   };
   const screenshot = async (name: string) => {
@@ -51,6 +52,7 @@ void (async () => {
   assert.equal(await evaluate('!!document.querySelector(".board-kind-task .board-card-header")'), true);
 
   async function point(selector: string, end = false) {
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     return evaluate<{ x: number; y: number }>(`(() => { const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return {x:Math.round(r.${end ? 'right' : 'left'} ${end ? '-' : '+'} 12), y:Math.round(r.${end ? 'bottom' : 'top'} ${end ? '-' : '+'} 12)}; })()`);
   }
   async function drag(selector: string, dx: number, dy: number, end = false) {
@@ -58,8 +60,10 @@ void (async () => {
     main.focus(); main.webContents.focus();
     main.webContents.sendInputEvent({ type: 'mouseMove', ...start }); await pause(60);
     assert.equal(await evaluate(`!!document.elementFromPoint(${start.x}, ${start.y})?.closest(${JSON.stringify(selector)})`), true, 'Pointer must hit the intended board control');
-    main.webContents.sendInputEvent({ type: 'mouseDown', ...start, button: 'left', clickCount: 1 }); await pause(25);
-    main.webContents.sendInputEvent({ type: 'mouseMove', x: start.x + dx, y: start.y + dy, button: 'left', modifiers: ['leftbuttondown'] }); await pause(25);
+    main.webContents.sendInputEvent({ type: 'mouseDown', ...start, button: 'left', clickCount: 1 });
+    await until(() => evaluate(`document.activeElement?.matches(${JSON.stringify(selector)})`), 'drag control focused');
+    main.webContents.sendInputEvent({ type: 'mouseMove', x: start.x + dx, y: start.y + dy, button: 'left', modifiers: ['leftbuttondown'] });
+    await until(() => evaluate('!!document.querySelector(".board-kind-text.moving")'), 'drag preview rendered');
     main.webContents.sendInputEvent({ type: 'mouseUp', x: start.x + dx, y: start.y + dy, button: 'left', clickCount: 1 });
   }
   await drag('.board-card-text', 50, 30);

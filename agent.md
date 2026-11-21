@@ -24,7 +24,7 @@
 | `src/shared/documents.ts`、`layout.ts` | 文档与图片约定、分栏尺寸规则 |
 | `electron/main.ts`、`preload.ts` | 生命周期、IPC、应用协议、托盘、提醒与退出保存 |
 | `electron/taskbar.ts` | Windows 任务栏应用标识与 ZIP/便携版的固定启动入口 |
-| `electron/storage.ts`、`folder-storage.ts` | 本机缓存、原子写入、数据文件夹切换与合并 |
+| `electron/storage.ts`、`folder-storage.ts`、`data-location.ts`、`record-gc.ts` | 目录内数据、升级迁移、原子写入、目录切换与过期块回收 |
 | `electron/document-files.ts` | 正文文件、图片、外部编辑回读与冲突保留 |
 | `src/shared/trash.ts`、`src/components/RecycleBin.tsx`、`electron/trash-files.ts` | 回收站记录、确认与恢复界面、受限目录文件清理 |
 | `electron/linked-note-commands.ts` | 关联记录删除前的跨窗口保存协调 |
@@ -99,6 +99,8 @@
 - 笔记与便签共用 `Workspace.notes` 一条记录及同一 Markdown 文档，`desktop` / `notebook` 分别为 visible、removed、none，`folderId` 只负责分类。两边都不 visible 时才派生 `deleted`，不可只删一个入口就清理正文。`normalizeNoteViews` 在合并时重新计算，覆盖两台设备分别删除不同入口的情况；旧便签默认只有 desktop。
 - `note.desktop` 和 `note.notebook` 恢复指定入口，回收站恢复还原曾移除的两边。转换为笔记保留 ID、正文和附件；主进程先发出 notebookRequest 再销毁便签窗口，不能依赖已销毁窗口的下一次 IPC 导航。
 - Notebook 的 FieldDraft 必须注册主窗口保存协调；关联、转换、删除操作等待主窗口和便签保存。看板上的笔记来源要打开可用入口，任务已有的关联记录可恢复 desktop，不能重复创建文档。
+- 笔记和目录支持右键及 Shift+F10 菜单；打开、重命名、移动、关联便签、删除均作用于菜单目标。删除先确认，保留关联便签、撤销与失败重试；删除目录保留笔记和子目录。菜单需避开窗口边缘，支持方向键和 Esc 焦点恢复。
+- 笔记删除确认显示目标名称及实际后果，使用带留白的正文和统一 `danger-button`，默认聚焦取消；窄窗口和 200% 缩放下说明与按钮仍可访问。取消清除该次错误，保存失败保留确认并允许重试。
 - 运行 `tests/notebook.test.ts`、相关 UI 测试及 `test:notebook`，覆盖视图独立删除、离线合并、防复活、目录与备份、真实双窗口保存和重启。
 
 ### Git 同步
@@ -106,7 +108,7 @@
 - `electron/git-sync.ts` 只对当前数据目录的独立仓库执行 Git；用 realpath 校验仓库根，避免暂存上级项目。使用 execFile 参数数组、windowsHide、超时和非交互认证，不拼接 shell。远程凭据和提交身份存储在 Git 的本机配置，不加入共享快照。
 - 初始化入口在设置，标题栏菜单仅在本机 Git 偏好开启时出现。切换数据目录自动停用，不删除仓库。状态中的含凭据 URL 脱敏；设置仅提交实际修改字段，不能把脱敏占位符写回 origin。
 - Configure/Action 经 withSavedData 保存所有草稿，再进入 FolderStorage.exclusive 串行队列。Pull 后重新读回工作区与文档；拒绝未提交修改，只使用 ff-only/no-rebase，不自动 force、reset、丢弃修改或解决冲突。
-- Add 包含数据目录，初始化 .gitignore 排除 .bak/.previous/.tmp。Push 使用当前分支与 origin，不更改项目源代码仓库。测试只允许 .qa 临时仓库与本地裸远程，不向个人远程执行 Push/Pull。
+- Add 包含数据目录，初始化 .gitignore 排除普通 .bak/.previous/.tmp；配置和 Add 补充 `!.gtodo/devices/*/workspace.json.bak`，保留共享池所需备份引用，忽略 writes、record-gc 和一次升级原件。Push 使用当前分支与 origin，不更改项目源代码仓库。测试只允许 .qa 临时仓库与本地裸远程，不向个人远程执行 Push/Pull。
 
 ### 自由看板
 
@@ -122,25 +124,26 @@
 
 ## 数据与兼容性
 
-- 本机用户数据目录通常为 `%APPDATA%\GTodo`：`workspace.json` 及备份保存缓存和设备身份，`preferences.json` 保存本机设置，`pomodoro.json` 保存计时与统计，`document-state.json` 保存外部编辑基线，`media` 缓存图片。
+- `%APPDATA%\GTodo` 只允许应用配置、设备身份和 Electron 运行文件，禁止保存任务、笔记、便签、图片、正文历史或番茄钟内容。默认数据目录在 Windows 文档/GTodo；QA 使用隔离 profile 的兄弟目录。`data-location.ts` 负责一次升级：校验复制业务文件至所选目录，原件存于 `.gtodo/migration-v2`，完整提交配置后按验证清单逐文件移除旧副本，失败保留原件并支持继续清理。`preferences.storageVersion: 3` 只表示路径迁移完成，不改变工作区 schemaVersion。
+- 主进程启动前设置 `disable-http-cache`，启动时清理旧 HTTP 缓存，避免远程 Markdown 图片在 AppData 留下另一份内容缓存；编辑模式等非内容偏好仍可使用 localStorage。
 - `src/shared/preferences.ts` 定义 `preferences.json.user` 的逐字段默认值和严格补丁校验。旧文件缺少字段时沿用原行为；补丁需移除 schema 的 default 后再 partial，避免 Zod 自动补默认值而重置无关设置。偏好写入走 PreferencesStore 串行原子保存，失败不更新内存。仅主窗口可调用偏好 IPC；设置不进入工作区同步或 JSON 备份。
-- 所选共享目录使用 `device-<设备 ID>.json` 保存各设备快照；不能改为所有设备覆盖同一个 JSON。窗口位置、缩放、番茄钟状态和日历目标不随此目录共享。
+- 所选目录使用 `device-<设备 ID>.json` 保存各设备快照；不能改为所有设备覆盖同一索引。`.gtodo/devices/<设备 ID>/` 保存本设备工作索引、备份、窗口状态、文档基线与番茄钟记录；其他设备不读取这些窗口与计时状态。所有索引共用根目录 `records`，图片直接复用根目录 `assets`。全局缩放和日历配置留在 AppData；`noteWindows` 从全局设置及其备份中移除正文相关标识，落盘至数据目录 `windows.json`。
 - 正文路径为 `documents/tasks/task-<ID>/note.md` 或 `documents/notes/note-<ID>/note.md`。关联便签复用任务路径；标题变化不改变路径。
 - JSON 同时保存属性、正文缓存、图片映射和修改时钟，用于恢复与合并。不要把正文文件当作唯一数据源，也不要把外部删除文件当作删除任务。
-- 当前 `schemaVersion` 为 `2`；`parseWorkspace` 明确迁移第 1 版并拒绝未来版本。`snapshot-files.ts` 保存第 2 版 `gtodo-records` 索引，记录内容哈希校验后存于 `records/<前两位>/<hash>.json`；本机及共享目录均按记录复用块。旧整份 JSON 读取兼容，本机迁移原件存入 `history/migration-*.json`，自己的旧设备快照留作 `.v1.bak`；转换成功前不得替换原文件。未知版本不能回退旧备份后覆盖。
+- 当前 `schemaVersion` 为 `2`；`parseWorkspace` 迁移第 1 版并拒绝未来版本。第 2 版 `gtodo-records` 索引引用根目录 `records/<前两位>/<hash>.json`，本设备工作索引、同步索引和历史复用同一池。旧整份 JSON 仍可读取；格式迁移原件存入数据目录内本设备 `history/migration-*.json`，自己的旧设备快照留作 `.v1.bak`。转换成功前不得替换原文件，未来版本不得回退旧备份后覆盖。
 - `document-history.ts` 按正文和附件两个时钟生成版本 ID，保留最近 50 版及未解决的分支头；合并父版本须确定且无方向差异。还原时产生新时钟，保存当前内容并连接已知分支；永久删除同时清理对应历史。历史 IPC 校验窗口归属，任务关联便签使用任务历史；AppState 不广播历史正文，编辑器按需读取。
 - `FileReadCache` 按大小、mtime/ctime/inode 复用读取，每分钟复核；手动重新读取清空缓存。后台扫描不能跳过保存前的外部修改观察；未稳定文件不得覆盖。只有工作区、错误或提示变化才广播，显式本机写入须强制通知所有窗口。
-- `history` 自动保留最近 24 份小时快照、7 份每日快照和 3 份迁移原件，复用记录块；首个时段写入后清理未引用本机块。主索引和 `.bak` 均损坏时尝试历史。设置写入也保存 `.bak`。永久删除时先清理所有自动快照和自己的迁移原件，再回收文件，保留其他设备与手动备份。
+- 数据目录内每设备 `history` 自动保留 24 份小时快照、7 份每日快照和 3 份格式迁移原件，复用记录块；主索引和 `.bak` 均损坏时只尝试本目录历史。设置写入也保存 `.bak`。永久删除先压缩本设备自动快照，再回收未引用文件，保留其他设备、手动备份与一次升级原件。
 - `backup-archive.ts` 默认以流式 ZIP 导出二进制图片、记录块、历史和可阅读 Markdown，保留旧外部图片别名；JSON 导入导出兼容。ZIP 限 1 GB/展开 2 GB，先在本机独立临时目录校验路径、类型、数量、大小、清单和 SHA-256，全部验证后再合并。拒绝符号链接、重复条目、未知路径和缺少附件，失败清理受限临时目录。偏好和设备身份不导入其他设备。
 - 保持字段级修改时钟和确定性合并。删除标记用于阻止离线旧副本复活记录，不随意清理。
 - `Workspace.purged` 默认为空，记录永久删除的类型、ID、时钟；不得存入标题、正文或 UI 摘要。合并时永久删除优先，过滤相应记录及任务的迟到步骤；保留标识防止旧快照/备份复活，重复任务也不能重新生成已清理的同 ID 实例。Outlook 仍需为这些任务生成明确的移除指令。
 - 回收站清理串行进入 FolderStorage，先保存窗口草稿、提交并同步永久删除标识、落盘保留方文档，再清理文件。当前目录不可用时禁止开始永久删除；失败后保留标识并允许重试。DataStore 自动备份同时压缩被永久删除的记录，但保留其他数据的恢复能力。
-- 只清理当前目录内被永久删除记录的文档目录，以及未引用图片和记录块；图片引用检查包含正常记录、回收站、正文历史、自动备份与其他设备快照。共享记录池只清理被永久删除且不被任何设备索引引用的块，不能扫掉其他设备尚未发布索引的新块。扫描完整计划并在每次删除前重新验证路径，拒绝符号链接/目录联接；只逐个 unlink 和删除空目录。保留手动导出、旧目录、其他设备快照和云端版本历史，不声称安全擦除。多设备使用时均需更新为本次构建。
-- 文件写入保持串行、原子替换和备份。共享目录不可用时仍保存本机修改；损坏或未下载完整的文件不能覆盖有效缓存。
+- `record-gc.ts` 每小时检查一次共享记录池：保护所有设备索引与其工作索引、上一版、保留历史。普通未引用块从首次观察起满 7 天且文件未变化后才可删除；重新引用则取消候选，新到达旧时间戳文件同样等待。`withRecordWrite` 发布写入标记，回收前再核对索引和写入状态，损坏/缺块时停止清理。“清理残留文件”统计和回收已到期普通块，不能绕过观察期。图片保护也包含其他设备自动备份。扫描和删除均校验路径、拒绝链接，只 unlink 文件和移除空目录；所有同步设备必须升级。
+- 文件写入保持串行、原子替换和备份。数据目录不可用、被移除或替换时停止落盘并保留窗口草稿，禁止在 AppData 保存副本或后台重建目录。`DataStore.assertAvailable` 校验目录标记，恢复原目录后可重试；选择空目录必须获得空工作区。
 - 保存期间的新输入应继续留在草稿中；收起、退出和关联删除前等待保存。保存失败时保持内容可编辑、可重试。
 - 导入、导出和切换目录前通过 `withSavedWorkspace` 等待主窗口及便签保存；任一失败禁止执行，所有保存请求结束后再恢复窗口交互。备份序列化与图片读取进入 FolderStorage 队列，避免与更新/清理交错。
 - DocumentEditor 的异步操作和看板图片导入也注册保存等待；便签的保存回执须等图片写入正文后再发送。批量插图中途失败仍保存已成功部分。图片缓存只有在新字节通过格式、大小及哈希校验时才能覆盖损坏的同 ID 缓存。
-- 切换数据目录时合并并保留原目录文件。不要复制整个用户数据目录到另一台电脑，以免复制设备身份。
+- 切换数据目录只打开目标内容，不合并原工作区；保留原文件、停止旧目录便签窗口、重新加载目标窗口配置及番茄钟、停用 Git/Outlook 同步。验证目标后再切换配置；需要搬迁时使用完整目录复制或 ZIP 导出/导入。不要复制 AppData 到另一台电脑，以免复制设备身份。
 - 保留路径穿越及符号链接/目录联接检查、IPC 来源与便签所属窗口校验、`contextIsolation` 和现有沙箱限制。
 
 ## 常用命令
@@ -205,7 +208,7 @@
 - 当前 electron-builder 配置 `portable.unpackDirName: true` 用于独立临时解压目录，防止重复启动清理另一实例资源。升级依赖时核对实际行为。
 - 任务栏 ID 保持 `app.gtodo.desktop`，与 `build.appId` 一致且不带版本号。打包版主窗口首次显示前调用 `setAppDetails`，同时提供 relaunchCommand、relaunchDisplayName 和稳定图标路径。便携版使用 electron-builder 提供的 `PORTABLE_EXECUTABLE_FILE`，不能使用临时目录里的 `process.execPath` 作为固定入口；ZIP 使用自身 EXE。不要修改用户固定项、任务栏缓存或注册表。升级说明提示从运行图标重新固定旧入口。依据：[Microsoft AppUserModelID](https://learn.microsoft.com/en-us/windows/win32/shell/appids)、[Electron setAppDetails](https://www.electronjs.org/docs/latest/api/base-window#winsetappdetailsoptions-windows)。
 - 单文件便携 EXE 每次都会解压运行环境；优先提供完整解压一次的 ZIP 版，不以固定共享临时目录换取速度。
-- 主窗口先读本机缓存，文件夹首次合并在窗口创建后运行；编辑仍进入 FolderStorage 串行队列。日历启用、手动同步及后台同步要等待首次读取；退出等待启动窗口恢复完成后再统一保存草稿。
+- 主窗口先读所选目录内的本设备工作索引，首次合并同目录其他设备文件在窗口创建后运行；编辑进入 FolderStorage 队列。旧版路径迁移在窗口创建前完成。日历同步等待首次读取，退出等待窗口恢复后再统一保存草稿。新目录无法读取时不得退回其他目录的业务数据。
 - Markdown 实时编辑器、预览与各代码语言高亮按需导入，构建后的语言分块均需包含在发布包中。发布包排除 `node_modules` 和主进程 source map：依赖已由 Vite/esbuild 打包；以后新增外部运行时依赖时须同步调整打包规则并验证 ASAR，不能盲目排除。
 - `bench:startup` 可接收构建目录或 ASAR 路径、便签数量、运行次数，使用隔离的 `.qa` 数据；首次状态返回不是完整冷启动，便携解压需单独测量。诊断日志记录 `startup-local-ready` / `startup-folder-ready`，不记录正文。
 - Outlook PowerShell 桥接构建输出保留 UTF-8 BOM，兼容 Windows PowerShell 5.1 的中文处理。新日历使用标准描述字段标记归属，同时兼容旧标记。

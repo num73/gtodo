@@ -180,6 +180,12 @@ export class NoteWindows {
     this.boundsTimers.clear();
     await Promise.all([...this.windows].map(([id, window]) => this.saveBounds(id, window)));
   }
+  async closeForWorkspace() {
+    await this.saveAllBounds();
+    // Drafts have already been flushed by withSavedWorkspace. Keep the old
+    // directory's open-window preferences for the next time it is opened.
+    for (const window of [...this.windows.values()]) if (!window.isDestroyed()) window.destroy();
+  }
   broadcast(state: AppState) {
     for (const [id, window] of this.windows) {
       if (window.isDestroyed()) continue;

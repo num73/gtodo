@@ -29,9 +29,12 @@ import { creationDefaults, patchUserPreferences } from '../src/shared/preference
 import { GitSync } from './git-sync';
 import { gitActionSchema, gitConfigureSchema } from '../src/shared/git';
 import { documentHistory } from '../src/shared/document-history';
+import { prepareDataLocation } from './data-location';
 
 app.setName('GTodo');
 app.setAppUserModelId(APP_USER_MODEL_ID);
+// Remote Markdown images must not leave another content cache in AppData.
+app.commandLine.appendSwitch('disable-http-cache');
 if (process.env.GTODO_DATA_DIR && !app.isPackaged) app.setPath('userData', path.resolve(process.env.GTODO_DATA_DIR));
 const diagnostics = new Diagnostics(app.getPath('userData'));
 const startupStages: Record<string, number> = {};
@@ -272,12 +275,15 @@ async function initialize() {
       return new Response('Not found', { status: 404 });
     }
   });
-  // Preserve the 1.0 local workspace and device identity; never load old cloud credentials.
-  store = new DataStore(app.getPath('userData')); await store.initialize();
-  startupMark('localDataMs');
   preferences = new PreferencesStore(app.getPath('userData')); await preferences.initialize();
+  await session.defaultSession.clearCache();
   startupMark('preferencesMs');
-  folders = new FolderStorage(store, preferences, () => { changed(); if (folderReady) outlook?.workspaceChanged(); });
+  const profileDirectory = app.getPath('userData');
+  const defaultDataDirectory = process.env.GTODO_DATA_DIR && !app.isPackaged
+    ? path.join(path.dirname(profileDirectory), `${path.basename(profileDirectory)}-data`) : path.join(app.getPath('documents'), 'GTodo');
+  store = await prepareDataLocation(preferences, defaultDataDirectory);
+  startupMark('localDataMs');
+  folders = new FolderStorage(store, preferences, () => { store = folders.local; changed(); if (folderReady) outlook?.workspaceChanged(); });
   screenCapture = new ScreenCapture({ native: { BrowserWindow, desktopCapturer, screen, nativeImage },
     html: path.join(__dirname, 'capture.html'), preload: path.join(__dirname, 'capture-preload.cjs') });
   outlook = new OutlookSync(preferences, () => store.engine.state,
@@ -287,7 +293,7 @@ async function initialize() {
     preload: path.join(__dirname, 'preload.cjs'), icon: path.join(app.getAppPath(), 'assets/icon.png'), url: devURL ? `${devURL}/` : 'gtodo://app/index.html' });
   pomodoroWindow = new PomodoroWindow({ preferences, publish: changed, quitting: () => quitting, native: { BrowserWindow, screen, dialog }, report: diagnostics.report,
     preload: path.join(__dirname, 'preload.cjs'), icon: path.join(app.getAppPath(), 'assets/icon.png'), url: devURL ? `${devURL}/` : 'gtodo://app/index.html' });
-  pomodoro = new PomodoroTimer({ directory: app.getPath('userData'), task: id => {
+  pomodoro = new PomodoroTimer({ directory: store.directory, write: async (file, content) => { await folders.local.assertAvailable(); await atomicWrite(file, content); }, task: id => {
     const task = store.engine.state.tasks.find(task => task.id === id && !task.values.deleted && !task.values.completed);
     return task ? { id: task.id, title: task.values.title } : null;
   }, changed: timer => {
@@ -478,7 +484,16 @@ async function initialize() {
   }, true);
   handle('gtodo:choose-folder', async () => {
     const result = await dialog.showOpenDialog(window!, { title: '选择 GTodo 数据文件夹', defaultPath: folders.directory, properties: ['openDirectory', 'createDirectory'], buttonLabel: '使用此文件夹' });
-    if (!result.canceled && result.filePaths[0]) await withSavedData('切换数据文件夹', () => folders.changeDirectory(result.filePaths[0]));
+    if (!result.canceled && result.filePaths[0]) await withSavedData('切换数据文件夹', async () => {
+      await pomodoro?.pause();
+      try {
+        await folders.changeDirectory(result.filePaths[0], async () => { await outlook?.configure(false); await notes.closeForWorkspace(); });
+      } catch (error) { if (preferences.value.user.restoreNotes) await notes.restore(); throw error; }
+      store = folders.local; notebookRequest = undefined;
+      await pomodoro?.changeDirectory(store.directory);
+      if (preferences.value.user.restoreNotes) await notes.restore();
+      changed();
+    });
     return state();
   });
   handle('gtodo:open-folder', async () => { const error = await shell.openPath(folders.directory); if (error) throw new Error('无法打开数据文件夹，请检查路径是否存在。'); });

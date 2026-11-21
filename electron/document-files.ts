@@ -97,7 +97,8 @@ export class DocumentFiles {
   private pending = new Map<string, { hash: string; since: number }>();
   private stagedBoardImages = new Set<string>();
   notice: string | null = null;
-  constructor(readonly directory: string, private options: { settleMs?: number; now?: () => number } = {}) {}
+  constructor(readonly directory: string, private options: { settleMs?: number; now?: () => number; assetRoot?: string; assertAvailable?: () => Promise<void> } = {}) {}
+  private get mediaDirectory() { return this.options.assetRoot ? path.join(this.options.assetRoot, 'assets') : path.join(this.directory, 'media'); }
   private key(root: string, parts: string[]) { return path.resolve(root, ...parts); }
   private async initialize() {
     if (this.initialized) return;
@@ -123,8 +124,9 @@ export class DocumentFiles {
     this.notice = '检测到同时编辑，已在文档旁的 conflicts 文件夹保留另一份内容。';
   }
   async cacheImage(bytes: Uint8Array) {
+    await this.options.assertAvailable?.();
     const id = `${hash(bytes)}.${imageType(bytes)}`;
-    const cache = path.join(this.directory, 'media'); await mkdir(cache, { recursive: true });
+    const cache = this.mediaDirectory; await mkdir(cache, { recursive: true });
     const file = await safePath(cache, [id]);
     const verified = Buffer.from(bytes);
     if (!(await this.read(cache, [id], MAX_IMAGE_BYTES))?.equals(verified)) await atomicWrite(file, verified);
@@ -138,7 +140,7 @@ export class DocumentFiles {
   }
   private async cached(id: string) {
     assetIdSchema.parse(id);
-    const bytes = await this.read(path.join(this.directory, 'media'), [id], MAX_IMAGE_BYTES);
+    const bytes = await this.read(this.mediaDirectory, [id], MAX_IMAGE_BYTES);
     if (bytes && `${hash(bytes)}.${imageType(bytes)}` !== id) throw new Error('本机图片校验失败，请保留图片文件并检查备份。');
     return bytes;
   }
@@ -292,7 +294,7 @@ export class DocumentFiles {
   }
   async assetFile(id: string) {
     const data = await this.cached(id); if (!data) throw new Error('有图片尚未同步完成，请稍后再导出备份。');
-    return { file: await safePath(this.directory, ['media', id]), size: data.length };
+    return { file: await safePath(this.mediaDirectory, [id]), size: data.length };
   }
   async readBoardImage(root: string, workspace: Workspace, value: string) {
     const id = assetIdSchema.parse(value);

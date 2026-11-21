@@ -12,6 +12,9 @@ export const windowBoundsSchema = z.object({
   height: z.number().int().min(400).max(20000), maximized: z.boolean(),
 });
 const schema = z.object({
+  deviceId: z.string().uuid().optional(),
+  storageVersion: z.literal(3).optional(),
+  migrationPath: z.string().optional(),
   dataPath: z.string().refine(path.isAbsolute),
   zoom: z.number().refine(value => zoomSteps.includes(value as typeof zoomSteps[number])),
   window: windowBoundsSchema.optional(),
@@ -35,6 +38,8 @@ export class PreferencesStore {
   value: Preferences;
   private queue: Promise<unknown> = Promise.resolve();
   readonly file: string;
+  private workspaceFile?: string;
+  private workspaceSerialized = '{}';
   constructor(readonly directory: string) {
     this.file = path.join(directory, 'preferences.json');
     this.value = { dataPath: path.join(directory, 'data'), zoom: 100, paneLayout: { ...defaultPaneLayout }, user: { ...defaultUserPreferences }, pomodoroWindow: { open: false, pinned: false }, noteWindows: {}, outlook: { enabled: false, target: null }, git: { enabled: false } };
@@ -50,13 +55,29 @@ export class PreferencesStore {
       }
     }
   }
+  async readWorkspaceWindows(directory: string) {
+    const file = path.join(directory, 'windows.json');
+    let value: Preferences['noteWindows'] = {};
+    try { value = schema.shape.noteWindows.parse(JSON.parse(await readFile(file, 'utf8'))); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('便签窗口设置无法读取，请检查数据目录。'); }
+    return value;
+  }
+  async attachWorkspace(directory: string, prepared?: Preferences['noteWindows']) {
+    await this.flush();
+    const value = prepared ?? await this.readWorkspaceWindows(directory);
+    this.workspaceFile = path.join(directory, 'windows.json'); this.workspaceSerialized = JSON.stringify(value); this.value.noteWindows = value;
+  }
   update(change: (value: Preferences) => void) {
     const operation = this.queue.then(async () => {
       const draft = structuredClone(this.value); change(draft); const next = schema.parse(draft);
       const backup = structuredClone(this.value);
+      if (next.storageVersion === 3 && backup.storageVersion !== 3) { backup.storageVersion = 3; backup.deviceId = next.deviceId; backup.dataPath = next.dataPath; backup.migrationPath = next.migrationPath; }
       if (next.user.inboxPurged) { backup.user.inboxPurged = true; backup.user.inboxVisible = false; if (backup.user.startupView === 'inbox') backup.user.startupView = 'all'; }
-      await atomicWrite(`${this.file}.bak`, JSON.stringify(backup, null, 2));
-      await atomicWrite(this.file, JSON.stringify(next, null, 2)); this.value = next;
+      const windows = JSON.stringify(next.noteWindows);
+      if (this.workspaceFile && windows !== this.workspaceSerialized) { await atomicWrite(this.workspaceFile, windows); this.workspaceSerialized = windows; }
+      const configuration = (value: Preferences) => next.storageVersion === 3 ? { ...value, noteWindows: {} } : value;
+      await atomicWrite(`${this.file}.bak`, JSON.stringify(configuration(backup), null, 2));
+      await atomicWrite(this.file, JSON.stringify(configuration(next), null, 2)); this.value = next;
     });
     this.queue = operation.catch(() => {}); return operation;
   }

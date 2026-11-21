@@ -38,6 +38,11 @@
 .notebook-save button { margin-left: 8px; color: var(--accent); }
 .notebook-error, .notebook-removed { font-size: 12px; color: #a12b37; padding: 10px 20px; }
 .notebook-picker { max-height: 55vh; overflow: auto; }
+.notebook-delete-confirmation { display: flex; flex-direction: column; gap: 12px; padding: 20px 22px; }
+.notebook-delete-name, .notebook-delete-description { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }
+.notebook-delete-name { font-size: 14px; }
+.notebook-delete-description { font-size: 13px; color: var(--muted); }
+.notebook-delete-confirmation .form-footer { padding-top: 8px; }
 @container notebook (max-width: 640px) {
   .notebook-header { padding: 12px; }
   .notebook-browser { width: 100%; border: 0; }

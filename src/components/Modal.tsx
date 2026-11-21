@@ -1,16 +1,17 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { X } from 'lucide-react';
 import { isComposing } from './keyboard';
 
-export default function Modal({ title, children, close, wide = false, busy = false }: { title: string; children: ReactNode; close: () => void; wide?: boolean; busy?: boolean }) {
+export default function Modal({ title, children, close, wide = false, busy = false, initialFocus }: { title: string; children: ReactNode; close: () => void; wide?: boolean; busy?: boolean; initialFocus?: RefObject<HTMLElement | null> }) {
   const ref = useRef<HTMLDialogElement>(null);
   const backdropPress = useRef(false);
   const closeRef = useRef(close); closeRef.current = close;
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement;
     ref.current?.showModal();
+    initialFocus?.current?.focus();
     return () => { ref.current?.close(); previouslyFocused?.focus(); };
-  }, []);
+  }, [initialFocus]);
   return <dialog ref={ref} className={`modal ${wide ? 'modal-wide' : ''}`} aria-label={title}
     onKeyDown={event => {
       if (event.key === 'Escape') { event.stopPropagation(); if (isComposing(event.nativeEvent)) event.preventDefault(); }

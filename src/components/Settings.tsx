@@ -76,11 +76,11 @@ export default function Settings({ state, api, pomodoro, close, update, toast }:
         <div className={`folder-state ${state.folder.error ? 'error-text' : ''}`}>{state.folder.error ? <AlertCircle size={14} /> : <Check size={14} />}<span>{state.folder.error ?? '已保存'}</span></div>
         <div className="folder-buttons"><button className="button primary" disabled={busy} onClick={() => void execute(async () => {
           const next = await api.chooseDataFolder(); update(next);
-          if (next.dataPath !== state.dataPath) toast('数据文件夹已更新，原文件已保留');
+          if (next.dataPath !== state.dataPath) toast('已打开所选目录，原目录的数据已保留');
         })}><FolderOpen size={16} />选择文件夹</button><button className="button secondary" disabled={busy} onClick={() => void execute(() => api.openDataFolder())}>打开文件夹</button><button className="icon-button" aria-label="重新读取文件夹" title="重新读取文件夹" disabled={busy} onClick={() => void execute(async () => update(await api.refreshFolder()))}><RefreshCw size={17} className={busy ? 'spin' : ''} /></button></div>
       </div>
-      <p className="setting-description">选择网盘的本地目录，由网盘客户端同步。请将文件保留在本地。</p>
-      <p className="setting-description">切换目录会合并数据，保留原文件。</p>
+      <p className="setting-description">任务、笔记、图片和备份仅保存在此目录。选择其他目录会打开其中的数据，空目录从空白开始，原目录文件保留。</p>
+      <p className="setting-description">迁移内容请先导出备份，再在目标目录导入。使用网盘同步时，请将文件保留在本地。</p>
       <div className="settings-divider" />
       <GitSettings state={state} api={api} active={category === 3} update={update} />
       <div className="settings-divider" />
