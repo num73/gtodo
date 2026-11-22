@@ -9,7 +9,7 @@ import { open as openZip, type ZipFile as InputZip, type Entry } from 'yauzl';
 import { z } from 'zod';
 import type { Workspace } from '../src/shared/model';
 import { assetIdSchema, documentParts, isAssetPath, MAX_IMAGE_BYTES } from '../src/shared/documents';
-import { DocumentFiles, imageType, workspaceAssetIds, workspaceDocuments } from './document-files';
+import { DocumentFiles, imageType, needsMarkdownFile, workspaceAssetIds, workspaceDocuments } from './document-files';
 import { collections, contentHash, recordParts, snapshotManifestSchema, SnapshotFiles, type SnapshotManifest } from './snapshot-files';
 import { safePath } from './file-io';
 
@@ -43,7 +43,7 @@ export async function writeBackupArchive(file: string, workspace: Workspace, doc
       }
     }
     for (const entry of workspaceDocuments(workspace)) {
-      add([...documentParts(entry), 'note.md'].join('/'), Buffer.from(entry.content));
+      if (needsMarkdownFile(entry)) add([...documentParts(entry), 'note.md'].join('/'), Buffer.from(entry.content));
       // External Markdown may deliberately use a mutable, human-named asset.
       // Preserve these aliases in an extracted archive as well as the hash pool.
       for (const [relative, id] of Object.entries(entry.assets)) if (relative.startsWith('assets/')) {

@@ -27,6 +27,8 @@ void (async () => {
   await evaluate(`document.querySelector('.task-body').click()`);
   await until(() => evaluate('!!document.querySelector("[aria-label=任务名称]")'), 'task editor');
   const initial = await evaluate('window.gtodo.getState()');
+  const emptyTaskDirectory = path.join(initial.dataPath, 'documents', 'tasks', `task-${initial.workspace.tasks[0].id}`);
+  await assert.rejects(stat(emptyTaskDirectory), { code: 'ENOENT' });
   const dataFiles = path.join(initial.dataPath, 'records');
   const recordFolders = (await readdir(dataFiles)).sort(), files = await Promise.all(recordFolders.map(async name => [name, (await readdir(path.join(dataFiles, name))).sort()]));
   const originalDay = initial.workspace.tasks[0].values.myDay;
@@ -40,6 +42,7 @@ void (async () => {
   assert.deepEqual((await readdir(dataFiles)).sort(), recordFolders);
   assert.deepEqual(await Promise.all(recordFolders.map(async name => [name, (await readdir(path.join(dataFiles, name))).sort()])), files);
   assert.deepEqual(await evaluate('window.gtodo.getState().then(s=>s.workspace.documentRevisions)'), initial.workspace.documentRevisions);
+  await assert.rejects(stat(emptyTaskDirectory), { code: 'ENOENT' });
   const exportFile = path.join(__dirname, 'backup.json');
   dialog.showSaveDialog = (async () => ({ canceled: false, filePath: exportFile })) as typeof dialog.showSaveDialog;
   const attempt = (method: string) => evaluate(`window.gtodo.${method}().then(() => ({ok:true}), error => ({ok:false,error:String(error)}))`);
@@ -84,6 +87,7 @@ void (async () => {
   await until(() => evaluate('!!document.querySelector("textarea[aria-label=备注]")'), 'imported task editor');
   const taskId = state.workspace.tasks[0].id;
   for (const body of ['历史第一稿', '历史第二稿']) await evaluate(`window.gtodo.command({type:'task.update',id:${JSON.stringify(taskId)},patch:{notes:${JSON.stringify(body)}}})`);
+  assert.equal(await readFile(path.join(destination, 'documents', 'tasks', `task-${taskId}`, 'note.md'), 'utf8'), '历史第二稿');
   await until(() => evaluate('document.querySelector("textarea[aria-label=备注]").value === "历史第二稿"'), 'history draft refresh');
   await evaluate('document.querySelector("[aria-label=正文历史版本]").click()');
   await until(() => evaluate('document.querySelector("[aria-label=选择历史版本]")?.options.length >= 2'), 'history selector');

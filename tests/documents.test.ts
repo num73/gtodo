@@ -11,6 +11,7 @@ import { assetURL, assetMapSchema, documentParts, documentFileName, normalizeAss
 import { FieldDraft, flushMainDrafts, registerMainDraft } from '../src/notes/draft';
 import { temporaryDirectory, transferSnapshot } from './helpers';
 import { linkedNoteForTask, linkedTaskForNote } from '../src/shared/note-links';
+import { withBackupArchive } from '../electron/backup-archive';
 
 async function device(t: TestContext) {
   const root = await temporaryDirectory(t); const store = new DataStore(root); await store.initialize();
@@ -27,6 +28,54 @@ async function device(t: TestContext) {
   return { root, store, preferences, documents, folder, task, note, file };
 }
 const png = () => readFile(path.resolve('assets/icon.png'));
+
+test('empty task remarks create no Markdown or task directory until the first content, including after restart', async t => {
+  const f = await device(t), parent = path.dirname(f.file(f.task));
+  await assert.rejects(stat(parent), { code: 'ENOENT' });
+  await f.folder.update(engine => engine.apply({ type: 'task.update', id: f.task.id, patch: { title: '改名', important: true, myDay: '2026-11-22', notes: ' \n\t ' } }));
+  await f.folder.refresh(); await assert.rejects(stat(parent), { code: 'ENOENT' });
+  await assert.rejects(f.documents.filePath(f.folder.directory, f.store.engine.state, f.task), /备注为空/);
+  await assert.rejects(stat(parent), { code: 'ENOENT' });
+  const store = new DataStore(f.root); await store.initialize();
+  const folder = new FolderStorage(store, f.preferences, () => {}, new DocumentFiles(f.root, { settleMs: 0 })); await folder.initialize();
+  await assert.rejects(stat(parent), { code: 'ENOENT' });
+  await folder.update(engine => engine.apply({ type: 'task.update', id: f.task.id, patch: { notes: '# 第一条备注\n\n保留原格式' } }));
+  assert.equal(await readFile(f.file(f.task), 'utf8'), '# 第一条备注\n\n保留原格式');
+  await folder.update(engine => engine.apply({ type: 'task.update', id: f.task.id, patch: { notes: '' } }));
+  await folder.refresh(); assert.equal(await readFile(f.file(f.task), 'utf8'), '');
+  assert.equal(store.engine.state.tasks[0].values.notes, '');
+  const restored = new DataStore(f.root); await restored.initialize();
+  const afterClear = new FolderStorage(restored, f.preferences); await afterClear.initialize();
+  assert.equal(restored.engine.state.tasks[0].values.notes, '');
+});
+
+test('an empty task linked to a sticky note creates only the shared Markdown when content is added', async t => {
+  const f = await device(t); await f.folder.update(engine => engine.apply({ type: 'task.link-note', id: f.task.id }));
+  const noteId = linkedNoteForTask(f.store.engine.state, f.store.engine.state.tasks[0])!.id;
+  const linked: DocumentTarget = { kind: 'note', id: noteId };
+  await assert.rejects(stat(path.dirname(f.file(f.task))), { code: 'ENOENT' });
+  await assert.rejects(stat(path.dirname(f.file(linked))), { code: 'ENOENT' });
+  const image = await f.folder.addImage(linked, await png());
+  await assert.rejects(stat(f.file(f.task)), { code: 'ENOENT' });
+  await f.folder.update(engine => engine.apply({ type: 'note.update', id: noteId, patch: { content: `![图片](${image})` } }));
+  assert.equal(await readFile(f.file(f.task), 'utf8'), `![图片](${image})`);
+  assert.equal(await f.documents.filePath(f.folder.directory, f.store.engine.state, linked), f.file(f.task));
+  await assert.rejects(stat(path.dirname(f.file(linked))), { code: 'ENOENT' });
+});
+
+test('ZIP export and import keep empty task records without manufacturing empty Markdown files', async t => {
+  const f = await device(t), backup = path.join(f.root, 'empty-remarks.zip');
+  await f.folder.exportBackupTo(backup);
+  await withBackupArchive(backup, f.root, async workspace => {
+    assert.equal(workspace.tasks.find(task => task.id === f.task.id)!.values.notes, '');
+    const [staging] = await readdir(path.join(f.root, 'imports'));
+    await assert.rejects(stat(path.join(f.root, 'imports', staging, ...documentParts(f.task), 'note.md')), { code: 'ENOENT' });
+    assert.equal(await readFile(path.join(f.root, 'imports', staging, ...documentParts(f.note), 'note.md'), 'utf8'), '纯文本');
+  });
+  const other = await device(t); await other.folder.importArchive(backup);
+  assert.equal(other.store.engine.state.tasks.find(task => task.id === f.task.id)!.values.notes, '');
+  await assert.rejects(stat(other.file(f.task)), { code: 'ENOENT' });
+});
 
 test('all workspaces use Markdown without rewriting old text, and unrelated updates preserve image mappings', async t => {
   const f = await device(t); const old = JSON.parse(JSON.stringify(f.store.engine.state));
@@ -60,6 +109,7 @@ test('external UTF-8 edits are read back after a stable observation, including a
   await f.folder.refresh(); assert.equal(f.store.engine.state.notes[0].values.content, '纯文本');
   assert.equal(await readFile(f.file(f.note), 'utf8'), '外部编辑\n保留换行');
   await f.folder.refresh(); assert.equal(f.store.engine.state.notes[0].values.content, '外部编辑\n保留换行');
+  await mkdir(path.dirname(f.file(f.task)), { recursive: true });
   await writeFile(f.file(f.task), '退出期间的修改', 'utf8');
   const reopened = new DataStore(f.root); await reopened.initialize();
   const folder = new FolderStorage(reopened, f.preferences, () => {}, new DocumentFiles(f.root, { settleMs: 0 }));

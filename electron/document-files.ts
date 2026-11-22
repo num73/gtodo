@@ -25,6 +25,7 @@ export function workspaceAssetIds(workspace: Workspace) {
   return new Set([...entries(workspace).flatMap(entry => Object.values(entry.assets)), ...(workspace.documentRevisions ?? []).flatMap(revision => Object.values(revision.assets)), ...boardAssetIds(workspace)]);
 }
 export const workspaceDocuments = entries;
+export function needsMarkdownFile(entry: Pick<Entry, 'kind' | 'content'>) { return entry.kind === 'note' || entry.content.trim().length > 0; }
 export function documentEntry(workspace: Workspace, target: DocumentTarget): Entry {
   if (target.kind === 'note') {
     const note = workspace.notes.find(note => note.id === target.id && !note.values.deleted);
@@ -223,7 +224,7 @@ export class DocumentFiles {
       if (!scan.protected.has(key)) {
         const old = await this.read(root, parts, MAX_TEXT_BYTES);
         const oldText = old ? new TextDecoder('utf-8', { fatal: true }).decode(old).replace(/^\ufeff/, '') : null;
-        if (scan.observed.get(key) === (oldText === null ? null : hash(oldText))) {
+        if (scan.observed.get(key) === (oldText === null ? null : hash(oldText)) && (oldText !== null || needsMarkdownFile(entry))) {
           const file = await safePath(root, parts, true);
           if (oldText !== entry.content) {
             if (oldText !== null) await atomicWrite(await safePath(root, [...documentParts(entry), `${documentFileName(entry.format)}.bak`], true), oldText);
@@ -258,7 +259,9 @@ export class DocumentFiles {
   }
   async filePath(root: string, workspace: Workspace, target: DocumentTarget) {
     const entry = documentEntry(workspace, target);
-    return safePath(root, [...documentParts(entry), documentFileName(entry.format)]);
+    const parts = [...documentParts(entry), documentFileName(entry.format)];
+    if (!needsMarkdownFile(entry) && await this.read(root, parts, MAX_TEXT_BYTES) === null) throw new Error('备注为空，填写内容后才会生成 Markdown 文件。');
+    return safePath(root, parts);
   }
   async forgetPurged(root: string, workspace: Workspace) {
     await this.initialize();

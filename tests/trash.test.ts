@@ -152,7 +152,7 @@ test('unused image cleanup preserves attachments referenced only by the automati
 
 test('unavailable folder prevents permanent deletion and cleanup resumes after a partial file failure', async t => {
   const f = await device(t); let id = '';
-  await f.folder.update(engine => { id = task(engine).id; });
+  await f.folder.update(engine => { id = task(engine).id; engine.apply({ type: 'task.update', id, patch: { notes: '待清理正文' } }); });
   await f.folder.update(engine => engine.apply({ type: 'task.update', id, patch: { deleted: true } }));
   const selection = (await f.folder.getTrash()).items; const original = f.folder.directory;
   await f.preferences.update(value => { value.dataPath = path.join(f.root, 'missing'); });
@@ -170,7 +170,7 @@ test('unavailable folder prevents permanent deletion and cleanup resumes after a
 
 test('cleanup rejects junctions before unlinking anything and preserves files outside the data folder', async t => {
   const f = await device(t); let id = '';
-  await f.folder.update(engine => { id = task(engine).id; });
+  await f.folder.update(engine => { id = task(engine).id; engine.apply({ type: 'task.update', id, patch: { notes: '待清理正文' } }); });
   const outside = await temporaryDirectory(t); await writeFile(path.join(outside, 'keep.txt'), 'KEEP');
   const dir = path.join(f.folder.directory, ...documentParts({ kind: 'task', id }));
   await symlink(outside, path.join(dir, 'external'), 'junction');
@@ -178,7 +178,7 @@ test('cleanup rejects junctions before unlinking anything and preserves files ou
   const selection = trashRecords(f.store.engine.state);
   const result = await f.folder.purgeTrash(selection); assert.match(result.error!, /符号链接|目录联接/);
   assert.equal(await readFile(path.join(outside, 'keep.txt'), 'utf8'), 'KEEP');
-  assert.equal(await readFile(path.join(dir, 'note.md'), 'utf8'), '');
+  assert.equal(await readFile(path.join(dir, 'note.md'), 'utf8'), '待清理正文');
 });
 
 test('other device snapshots remain unchanged while stale imports cannot revive purged data', async t => {
