@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, readFile, copyFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { TestContext } from 'node:test';
 import { SnapshotFiles, isRecordManifest, recordParts } from '../electron/snapshot-files';
+import { isCurrentManifest, currentRecordParts } from '../electron/current-records';
 
 export async function temporaryDirectory(t: TestContext) {
   const root = path.resolve('.qa', 'tests'); await mkdir(root, { recursive: true });
@@ -22,6 +23,11 @@ export async function transferSnapshot(source: string, destination: string) {
   if (isRecordManifest(manifest)) for (const hashes of Object.values(manifest.records)) for (const hash of hashes) {
     const target = path.join(destination, ...recordParts(hash)); await mkdir(path.dirname(target), { recursive: true });
     try { await stat(target); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; await copyFile(path.join(path.dirname(source), ...recordParts(hash)), target); }
+  }
+  if (isCurrentManifest(manifest)) for (const [collection, refs] of Object.entries(manifest.records)) for (const ref of refs) {
+    const parts = currentRecordParts(manifest.deviceId, collection as keyof typeof manifest.records, ref.key);
+    const target = path.join(destination, ...parts); await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(path.join(path.dirname(source), ...parts), target);
   }
   await copyFile(source, path.join(destination, path.basename(source)));
 }

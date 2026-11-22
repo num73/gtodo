@@ -14,6 +14,7 @@ import { collectPurgedSharedRecords, SnapshotFiles } from './snapshot-files';
 import { FileReadCache, safePath } from './file-io';
 import { withBackupArchive, writeBackupArchive } from './backup-archive';
 import { collectRecordGarbage, recordReferences, retainedDirectoryWorkspaces, withRecordWrite } from './record-gc';
+import { isCurrentManifest } from './current-records';
 
 export const MAX_DATA_BYTES = 24 * 1024 * 1024;
 // Include conflict copies produced by desktop sync clients, but never temp/backup files.
@@ -51,16 +52,23 @@ export class FolderStorage {
       const bytes = await this.fileCache.read(file, MAX_DATA_BYTES), content = bytes.toString('utf8');
       try {
         let saved = this.decoded.get(file);
-        if (saved?.bytes !== bytes) { saved = { bytes, workspace: await this.snapshots.decode(JSON.parse(content), directory) }; this.decoded.set(file, saved); }
+        const value: unknown = JSON.parse(content);
+        if (saved?.bytes !== bytes || isCurrentManifest(value)) { saved = { bytes, workspace: await this.snapshots.decode(value, directory) }; this.decoded.set(file, saved); }
         workspaces.push(saved.workspace);
       }
-      catch (error) { if (String(error).includes('较新版本')) throw error; throw new Error(`文件 ${name} 尚未完整同步或格式损坏，已暂停合并；本机任务已保留。`); }
+      catch (error) {
+        if (String(error).includes('较新版本')) throw error;
+        // Our durable working snapshot is committed before publishing mutable
+        // files. Re-publish it after an interrupted write of our own index.
+        if (file === this.ownFile && Object.values(this.local.engine.state).some(value => Array.isArray(value) && value.length)) this.published.delete(file);
+        else throw new Error(`文件 ${name} 尚未完整同步或格式损坏，已暂停合并；本机任务已保留。`);
+      }
       contents.set(name, content);
     }
     return { workspaces, contents };
   }
   private async encode(workspace: Workspace, directory = this.directory) {
-    const content = JSON.stringify(await this.snapshots.encode(workspace, directory));
+    const content = JSON.stringify(await this.snapshots.current.encode(workspace, directory, this.local.engine.deviceId));
     if (Buffer.byteLength(content) > MAX_DATA_BYTES) throw new Error('设备索引超过 24 MB，已暂停发布同步索引，请先导出备份并整理记录。');
     return content;
   }
@@ -89,6 +97,7 @@ export class FolderStorage {
           await withRecordWrite(this.directory, this.local.engine.deviceId, () => atomicWrite(this.ownFile, content)); this.fileCache.invalidate(this.ownFile);
         }
         this.published.set(this.ownFile, { workspace: this.local.engine.state, content });
+        await this.snapshots.current.collect(this.directory, this.local.engine.deviceId);
         await this.documents.writeDocuments(this.directory, this.local.engine.state, scan!);
       }
       this.status = { error: null, lastRead: new Date().toISOString(), notice: this.documents.notice };

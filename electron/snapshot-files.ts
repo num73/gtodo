@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { parseWorkspace, type Workspace } from '../src/shared/model';
 import { atomicWrite, FileReadCache, safePath } from './file-io';
+import { CurrentRecords, isCurrentManifest } from './current-records';
 
 export const collections = ['lists', 'tasks', 'steps', 'notes', 'noteFolders', 'boards', 'boardCards', 'purged', 'documentRevisions'] as const;
 export const contentHash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
@@ -18,6 +19,7 @@ export function isRecordManifest(value: unknown): value is SnapshotManifest { re
 export function recordParts(hash: string) { digest.parse(hash); return ['records', hash.slice(0, 2), `${hash}.json`]; }
 export class SnapshotFiles {
   readonly cache = new FileReadCache();
+  readonly current = new CurrentRecords(this.cache);
   private encoded = new Map<string, { value: unknown; hash: string; content: string }>();
   private verified = new WeakMap<Buffer, { hash: string; value: unknown }>();
   private verify(bytes: Buffer, hash: string) {
@@ -50,6 +52,8 @@ export class SnapshotFiles {
     return { format: 'gtodo-records', version: 2, schemaVersion: 2, records };
   }
   async decode(value: unknown, root: string): Promise<Workspace> {
+    if (isCurrentManifest(value)) return this.current.decode(value, root);
+    if ((value as { format?: string })?.format === 'gtodo-workspace' && Number((value as { version?: number }).version) > 3) throw new Error('数据由较新版本创建，请升级 GTodo 后再打开。');
     if (!isRecordManifest(value)) return parseWorkspace(value);
     if (Number(value.version) > 2 || Number(value.schemaVersion) > 2) throw new Error('数据由较新版本创建，请升级 GTodo 后再打开。');
     const manifest = snapshotManifestSchema.parse(value), result: Record<string, unknown> = { schemaVersion: 2 };
@@ -73,7 +77,7 @@ export async function collectPurgedSharedRecords(root: string, workspace: Worksp
   for (const name of await readdir(root)) if (/^device-[^\\/]+\.json$/i.test(name)) {
     const value: unknown = JSON.parse(await readFile(await safePath(root, [name]), 'utf8'));
     if (isRecordManifest(value)) for (const values of Object.values(snapshotManifestSchema.parse(value).records)) for (const hash of values) used.add(hash);
-    else parseWorkspace(value);
+    else await new SnapshotFiles().decode(value, root);
   }
   const purged = new Set(workspace.purged.map(marker => `${marker.kind}:${marker.id}`)); let freed = 0;
   let directory: string;

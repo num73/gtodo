@@ -49,7 +49,7 @@ export class DataStore {
     const text = await readFile(file, 'utf8');
     const parsed = savedSchema.parse(JSON.parse(text));
     const workspace = await this.snapshots.decode(parsed.workspace, this.dataRoot);
-    return { ...parsed, workspace, text, legacy: !isRecordManifest(parsed.workspace) };
+    return { ...parsed, workspace, text, legacy: (parsed.workspace as { format?: string })?.format !== 'gtodo-workspace' };
   }
   async initialize() {
     await mkdir(this.directory, { recursive: true });
@@ -72,12 +72,25 @@ export class DataStore {
     if (saved.legacy) {
       const migrated = await this.serialize(this.engine);
       const backup = await safePath(this.directory, ['history', `migration-${Date.now()}-${crypto.randomUUID()}.json`], true);
-      await atomicWrite(backup, saved.text);
+      const original = JSON.parse(saved.text).workspace;
+      await atomicWrite(backup, isRecordManifest(original) ? JSON.stringify({ deviceId: saved.deviceId, workspace: saved.workspace }) : saved.text);
       await atomicWrite(this.file, migrated);
     } else if (recovered) await atomicWrite(this.file, await this.serialize(this.engine));
     if (recovered) this.notice = '主数据文件异常，已从本地备份恢复。建议导出一份备份。';
+    // Freeze older backups before the shared files become mutable. They remain
+    // self-contained and cannot silently change when the current record changes.
+    for (const file of [`${this.file}.bak`, ...await Promise.all((await this.historyFiles()).map(name => safePath(this.directory, ['history', name])))]) {
+      if (!await exists(file)) continue;
+      try {
+        const original = JSON.parse(await readFile(file, 'utf8'));
+        if (isRecordManifest(original.workspace)) {
+          const historical = await this.readSnapshot(file);
+          await atomicWrite(file, JSON.stringify({ deviceId: historical.deviceId, workspace: historical.workspace }));
+        }
+      } catch { this.notice ??= '部分旧备份暂未转换，已保留原文件，当前内容仍可使用。'; }
+    }
   }
-  private async serialize(engine: WorkspaceEngine) { return JSON.stringify({ deviceId: engine.deviceId, workspace: await this.snapshots.encode(engine.state, this.dataRoot) }); }
+  private async serialize(engine: WorkspaceEngine) { return JSON.stringify({ deviceId: engine.deviceId, workspace: { format: 'gtodo-workspace', version: 3, ...engine.state } }); }
   async flush() { await this.queue; }
   async backupWorkspace(): Promise<Workspace> {
     if (!await exists(`${this.file}.bak`)) return emptyWorkspace();

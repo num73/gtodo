@@ -1,9 +1,8 @@
-import { readFile, readdir, stat, unlink } from 'node:fs/promises';
+import { readFile, readdir, rmdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { atomicWrite, safePath } from './file-io';
-import { contentHash, isRecordManifest, snapshotManifestSchema, recordParts } from './snapshot-files';
-import { parseWorkspace } from '../src/shared/model';
+import { contentHash, isRecordManifest, snapshotManifestSchema, recordParts, SnapshotFiles } from './snapshot-files';
 
 export const RECORD_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
@@ -27,7 +26,7 @@ export async function recordReferences(root: string) {
     const parsed = JSON.parse(bytes.toString('utf8'));
     const value = parsed.workspace ?? parsed;
     if (isRecordManifest(value)) for (const hashes of Object.values(snapshotManifestSchema.parse(value).records)) for (const hash of hashes) used.add(hash);
-    else parseWorkspace(value);
+    else await new SnapshotFiles().decode(value, root);
     stamps.push(`${parts.join('/')}:${contentHash(bytes)}`);
   }
   // A missing referenced block means a sync is still arriving. Do not sweep.
@@ -88,6 +87,10 @@ export async function collectRecordGarbage(root: string, device: string, options
     }
   }
   if (JSON.stringify(next) !== JSON.stringify(old)) await atomicWrite(ledgerFile, JSON.stringify(next));
+  if (options.remove !== false && !await writing(root, now)) for (const prefix of await names(root, ['records'])) if (/^[a-f0-9]{2}$/.test(prefix)) {
+    try { await rmdir(await safePath(root, ['records', prefix], false, true)); }
+    catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
+  }
   return result;
 }
 

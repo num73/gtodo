@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, session } from 'electron';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { SnapshotFiles } from '../electron/snapshot-files';
 import { withBackupArchive } from '../electron/backup-archive';
 
@@ -26,6 +26,20 @@ void (async () => {
   await until(() => evaluate('!!document.querySelector(".task-body")'), 'created task');
   await evaluate(`document.querySelector('.task-body').click()`);
   await until(() => evaluate('!!document.querySelector("[aria-label=任务名称]")'), 'task editor');
+  const initial = await evaluate('window.gtodo.getState()');
+  const dataFiles = path.join(initial.dataPath, 'records');
+  const recordFolders = (await readdir(dataFiles)).sort(), files = await Promise.all(recordFolders.map(async name => [name, (await readdir(path.join(dataFiles, name))).sort()]));
+  const originalDay = initial.workspace.tasks[0].values.myDay;
+  for (let i = 0; i < 3; i++) {
+    await evaluate('document.querySelector(".day-toggle").click()');
+    await until(() => evaluate('document.querySelector(".day-toggle")?.getAttribute("aria-pressed")==="false"'), 'remove from My Day');
+    await evaluate('document.querySelector(".day-toggle").click()');
+    await until(() => evaluate('document.querySelector(".day-toggle")?.getAttribute("aria-pressed")==="true"'), 'add to My Day');
+  }
+  assert.equal(await evaluate('window.gtodo.getState().then(s=>s.workspace.tasks[0].values.myDay)'), originalDay);
+  assert.deepEqual((await readdir(dataFiles)).sort(), recordFolders);
+  assert.deepEqual(await Promise.all(recordFolders.map(async name => [name, (await readdir(path.join(dataFiles, name))).sort()])), files);
+  assert.deepEqual(await evaluate('window.gtodo.getState().then(s=>s.workspace.documentRevisions)'), initial.workspace.documentRevisions);
   const exportFile = path.join(__dirname, 'backup.json');
   dialog.showSaveDialog = (async () => ({ canceled: false, filePath: exportFile })) as typeof dialog.showSaveDialog;
   const attempt = (method: string) => evaluate(`window.gtodo.${method}().then(() => ({ok:true}), error => ({ok:false,error:String(error)}))`);

@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, stat, open, unlink, lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export async function atomicWrite(file: string, content: string | Uint8Array) {
   await mkdir(path.dirname(file), { recursive: true });
@@ -7,7 +8,15 @@ export async function atomicWrite(file: string, content: string | Uint8Array) {
   try {
     const handle = await open(temporary, 'wx');
     try { await handle.writeFile(content, 'utf8'); await handle.sync(); } finally { await handle.close(); }
-    await rename(temporary, file);
+    for (let attempt = 0; ; attempt++) {
+      try { await rename(temporary, file); break; }
+      catch (error) {
+        // Windows sync/indexing clients may briefly hold the existing file.
+        // Retry the atomic replacement; never unlink the last saved version.
+        if (process.platform !== 'win32' || attempt >= 5 || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        await delay(15 * (attempt + 1));
+      }
+    }
   } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
 }
 export async function safePath(root: string, parts: string[], create = false, allowDirectory = false) {

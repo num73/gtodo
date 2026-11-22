@@ -7,6 +7,7 @@ import { FolderStorage } from '../electron/folder-storage';
 import { DocumentFiles } from '../electron/document-files';
 import { PreferencesStore } from '../electron/preferences';
 import { SnapshotFiles, recordParts, contentHash } from '../electron/snapshot-files';
+import { currentRecordParts } from '../electron/current-records';
 import { withBackupArchive } from '../electron/backup-archive';
 import { WorkspaceEngine, mergeWorkspaces } from '../src/shared/engine';
 import { emptyWorkspace, parseWorkspace } from '../src/shared/model';
@@ -79,7 +80,7 @@ test('schema one migrates with its exact original backup, stable identity and re
   assert.equal(store.engine.state.notes[0].values.notebook, 'visible'); assert.equal(store.engine.state.notes[0].values.desktop, 'visible');
   const migrations = (await readdir(path.join(root, 'history'))).filter(name => name.startsWith('migration-'));
   assert.equal(migrations.length, 1); assert.equal(await readFile(path.join(root, 'history', migrations[0]), 'utf8'), original);
-  assert.equal(JSON.parse(await readFile(store.file, 'utf8')).workspace.format, 'gtodo-records');
+  assert.equal(JSON.parse(await readFile(store.file, 'utf8')).workspace.format, 'gtodo-workspace');
   const reopened = new DataStore(root); await reopened.initialize(); assert.deepEqual(reopened.engine.state, store.engine.state);
 });
 
@@ -93,14 +94,20 @@ test('failed migration and unknown future formats never replace the original wit
   await assert.rejects(new DataStore(root).initialize(), /较新版本/); assert.equal(await readFile(file, 'utf8'), future);
 });
 
-test('record sharding reuses unchanged blocks and idle refreshes do no file reads, writes or notifications', async t => {
+test('fixed records reuse filenames and idle refreshes do no file reads, writes or notifications', async t => {
   const f = await device(t);
   await f.folder.update(engine => { for (let i = 0; i < 30; i++) engine.apply({ type: 'task.add', title: `任务 ${i}`, listId: 'inbox' }); });
   const original = JSON.parse(await readFile(f.folder.ownFile, 'utf8'));
-  const first = original.records.tasks[0], file = path.join(f.folder.directory, ...recordParts(first)), time = (await stat(file)).mtimeMs;
-  await f.folder.update(engine => engine.apply({ type: 'task.update', id: engine.state.tasks[5].id, patch: { title: '只改一项' } }));
+  const first = original.records.tasks[0], file = path.join(f.folder.directory, ...currentRecordParts(original.deviceId, 'tasks', first.key)), time = (await stat(file)).mtimeMs;
+  const taskContents = new Map<string, string>();
+  for (const ref of original.records.tasks) taskContents.set(ref.key, await readFile(path.join(f.folder.directory, ...currentRecordParts(original.deviceId, 'tasks', ref.key)), 'utf8'));
+  const unchangedId = JSON.parse(await readFile(file, 'utf8')).items[0].id;
+  await f.folder.update(engine => engine.apply({ type: 'task.update', id: engine.state.tasks.find(item => item.id !== unchangedId)!.id, patch: { title: '只改一项' } }));
   const next = JSON.parse(await readFile(f.folder.ownFile, 'utf8'));
-  assert.equal(next.records.tasks.filter((hash: string) => !original.records.tasks.includes(hash)).length, 1);
+  assert.deepEqual(next.records.tasks.map((ref: { key: string }) => ref.key), original.records.tasks.map((ref: { key: string }) => ref.key));
+  let changes = 0;
+  for (const ref of next.records.tasks) if (taskContents.get(ref.key) !== await readFile(path.join(f.folder.directory, ...currentRecordParts(next.deviceId, 'tasks', ref.key)), 'utf8')) changes++;
+  assert.equal(changes, 1);
   assert.equal((await stat(file)).mtimeMs, time);
   await f.folder.refresh(); await f.folder.refresh();
   const reads = [f.folder.fileCache.reads, f.folder.snapshots.cache.reads, f.folder.documents.files.reads], events = f.events(), saved = (await stat(f.folder.ownFile)).mtimeMs;
@@ -117,7 +124,7 @@ test('incomplete remote blocks pause merging; all offline edits survive when mis
   await b.folder.update(engine => engine.apply({ type: 'task.add', title: '离线新增', listId: 'inbox' }));
   await transferSnapshot(a.folder.ownFile, b.folder.directory); await b.folder.refresh(true);
   assert.equal(b.folder.status.error, null); assert.equal(b.local.engine.state.tasks[0].values.title, '离线新增'); assert.equal(b.local.engine.state.notes[0].values.content, '远端正文');
-  const parsed = JSON.parse(manifest.toString()), block = path.join(b.folder.directory, ...recordParts(parsed.records.notes[0])); await writeFile(block, '{invalid');
+  const parsed = JSON.parse(manifest.toString()), block = path.join(b.folder.directory, ...currentRecordParts(parsed.deviceId, 'notes', parsed.records.notes[0].key)); await writeFile(block, '{invalid');
   await b.folder.refresh(true); assert.match(b.folder.status.error!, /尚未完整同步/); assert.equal(await readFile(block, 'utf8'), '{invalid');
 });
 
@@ -155,7 +162,7 @@ test('purge scrubs rolling and migration backups and frees shared record blocks,
   const result = await f.folder.purgeTrash((await f.folder.getTrash()).items); assert.equal(result.error, null);
   for (const backup of await f.local.backupWorkspaces()) { assert.equal(backup.notes.length, 0); assert.equal(backup.documentRevisions.length, 0); }
   assert.equal((await readFile(`${f.folder.ownFile}.v1.bak`, 'utf8')).includes('PURGE_PRIVATE_TEXT'), false);
-  for (const root of [f.root, f.folder.directory]) for (const prefix of await readdir(path.join(root, 'records'))) for (const name of await readdir(path.join(root, 'records', prefix))) {
+  for (const root of [f.root, f.folder.directory]) for (const prefix of await readdir(path.join(root, 'records')).catch(error => { if (error.code === 'ENOENT') return []; throw error; })) for (const name of await readdir(path.join(root, 'records', prefix))) {
     assert.equal((await readFile(path.join(root, 'records', prefix, name), 'utf8')).includes('PURGE_PRIVATE_TEXT'), false);
   }
   await f.folder.importBackup(snapshot, {}); assert.equal(f.local.engine.state.notes.length, 0);
